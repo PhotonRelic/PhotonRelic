@@ -33,9 +33,10 @@ ACCESS_TEAM_DOMAIN = "REPLACE_ACCESS_TEAM_DOMAIN"
 ACCESS_AUD = "REPLACE_ACCESS_AUD"
 # The resizer's public origin (resizer.toml).
 MEDIA_ORIGIN = "https://img.example.com"
-# The resizer's menu, for the file page's embed markup. Only when resizer.toml
-# overrides the menu; these must match resizer.toml, or the copied markup asks
-# for sizes the resizer refuses.
+# The resizer's menu, for the file page's embed markup and so a purge covers
+# every size the edge may hold. Only when resizer.toml overrides the menu;
+# these must match resizer.toml, or the copied markup asks for sizes the
+# resizer refuses.
 # MEDIA_WIDTHS = "320,768,1440"
 # MEDIA_ASPECTS = "1:1,16:9"
 UPLOAD_PREFIX = "media/"
@@ -47,6 +48,12 @@ LIBRARY_PREFIXES = "media/"
 # configured" and nothing else changes.
 CF_ACCOUNT_ID = "REPLACE_CF_ACCOUNT_ID"
 USAGE_DATASET = "photonrelic_usage"
+
+# Optional: purge the edge after Replace, Delete and a Rescan that finds
+# changed bytes. The zone the resizer's hostname is in, plus the
+# CACHE_PURGE_TOKEN secret (see .env.example): an API token with
+# Zone → Cache Purge → Purge on that zone. Unset, cached copies expire in a day.
+# CF_ZONE_ID = "<zone id, from the zone's Overview page>"
 
 [[d1_databases]]
 binding = "DB"

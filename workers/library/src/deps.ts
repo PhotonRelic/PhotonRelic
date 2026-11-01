@@ -6,6 +6,7 @@ import { mediaUrl, type ResizeMenu } from '@photonrelic/media-params';
 import type { AccessVerifier } from './access.js';
 import type { Db } from './db.js';
 import type { MediaBucket, MediaLayout } from './media.js';
+import type { PurgeConfig } from './purge.js';
 import type { UsageReader } from './usage.js';
 
 export interface AppDeps {
@@ -20,6 +21,8 @@ export interface AppDeps {
   usage: UsageReader | null;
   /** The resizer's menu, which the file page's embed markup is built from. */
   menu: ResizeMenu;
+  /** How to purge the edge; null leaves cached copies to expire on their own. */
+  purge: PurgeConfig | null;
   environment: string;
   now: () => Date;
 }

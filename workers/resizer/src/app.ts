@@ -16,6 +16,7 @@
 import {
   MAX_TRANSFORM_SOURCE_BYTES,
   MEDIA_MIME,
+  type MediaOutputFormat,
   type MediaTransformParams,
   parseMediaParams,
   type ResizeMenu,
@@ -90,6 +91,20 @@ function apiError(c: Context, status: ContentfulStatusCode, code: ErrorCode, mes
     'access-control-allow-origin': '*',
     'cache-control': 'no-store',
   });
+}
+
+/**
+ * The edge cache key for a resize: the request URL with `f` set to the format
+ * actually produced and the query sorted, so `f=auto` is cached per format,
+ * not per Accept header, and parameter order does not matter. The library's
+ * purge after a replace or delete enumerates these (`variantUrls` in
+ * media-params), so the two must agree exactly.
+ */
+export function transformCacheKey(requestUrl: string, resolved: MediaOutputFormat): string {
+  const keyUrl = new URL(requestUrl);
+  keyUrl.searchParams.set('f', resolved);
+  keyUrl.searchParams.sort();
+  return keyUrl.toString();
 }
 
 /** Run work after the response when the runtime allows it; await it otherwise (tests). */
@@ -186,11 +201,7 @@ export function createApp(deps: ResizerDeps) {
 
   /** Serve an object resized; falls back to the stored object when it cannot be. */
   const serveTransformed = async (c: Context, key: string, params: MediaTransformParams) => {
-    // The cache key carries the resolved format, so `f=auto` caches per format, not per Accept.
-    const keyUrl = new URL(c.req.url);
-    keyUrl.searchParams.set('f', params.resolved);
-    keyUrl.searchParams.sort();
-    const { cache, cacheKey } = cacheFor(keyUrl.toString());
+    const { cache, cacheKey } = cacheFor(transformCacheKey(c.req.url, params.resolved));
     const hit = await cache?.match(cacheKey);
     if (hit) return notedHit(c, key, hit, params.resolved);
     const expired = await gone(c, key);

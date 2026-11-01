@@ -117,6 +117,33 @@ export const CONTENT_TYPES: Record<string, string> = {
 export const contentTypeFor = (key: string): string =>
   CONTENT_TYPES[key.slice(key.lastIndexOf('.') + 1).toLowerCase()] ?? 'application/octet-stream';
 
+/** The formats the browser may send and the resizer can take; a Replace must keep to these. */
+export const WEB_IMAGE_KEY = /\.(?:jpe?g|png|webp|avif|gif)$/i;
+
+/**
+ * The image format the first bytes declare, or null. A Replace writes over a
+ * key other pages already link to, so the bytes must be what the extension
+ * says: a PNG under a .jpg key would serve with the wrong type for a day.
+ */
+export function sniffImageType(bytes: ArrayBuffer): string | null {
+  const b = new Uint8Array(bytes);
+  const at = (i: number, ...want: number[]) => want.every((v, j) => b[i + j] === v);
+  const ascii = (i: number, s: string) => at(i, ...[...s].map((ch) => ch.charCodeAt(0)));
+  if (at(0, 0xff, 0xd8, 0xff)) return 'image/jpeg';
+  if (at(0, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return 'image/png';
+  if (ascii(0, 'GIF87a') || ascii(0, 'GIF89a')) return 'image/gif';
+  if (ascii(0, 'RIFF') && ascii(8, 'WEBP')) return 'image/webp';
+  if (ascii(4, 'ftyp')) {
+    // An ISO media file: the ftyp box lists its brands, major first, from byte 8;
+    // some encoders put `avif` among the compatible brands under a `mif1` major.
+    const size = ((b[0] ?? 0) << 24) | ((b[1] ?? 0) << 16) | ((b[2] ?? 0) << 8) | (b[3] ?? 0);
+    for (let i = 8; i + 4 <= Math.min(size, b.length, 64); i += 4) {
+      if (ascii(i, 'avif') || ascii(i, 'avis')) return 'image/avif';
+    }
+  }
+  return null;
+}
+
 /**
  * The subject folder of an upload key (`media/products/chairs/x.jpg` →
  * `products/chairs`); null for a key outside the upload prefix or at its root.

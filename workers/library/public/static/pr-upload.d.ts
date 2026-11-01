@@ -54,3 +54,9 @@ export function exifDateToIso(s: string): string | null;
 export function joinCamera(make: string | null | undefined, model: string | null | undefined): string;
 export function readCapture(bytes: ArrayBuffer | Uint8Array): CaptureEntry;
 export function webpHasExif(bytes: ArrayBuffer | Uint8Array): boolean;
+export function extensionOf(name: string): string;
+export function replaceProblem(
+  file: { name: string; size: number },
+  key: string,
+  maxBytes: number,
+): string | null;

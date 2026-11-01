@@ -40,3 +40,9 @@ need_credentials
 if [ -f "$LIB" ] && [ -n "${ANALYTICS_TOKEN:-}" ]; then
   printf '%s' "$ANALYTICS_TOKEN" | wr library secret put ANALYTICS_TOKEN -c "$LIB"
 fi
+# The cache purge token, when .env has one: stored as the library Worker's
+# secret after the deploy (the Worker must exist first). Putting the same value
+# again is harmless, so this runs every time; without one, nothing changes.
+if [ -f "$LIB" ] && [ -n "${CACHE_PURGE_TOKEN:-}" ]; then
+  printf '%s' "$CACHE_PURGE_TOKEN" | wr library secret put CACHE_PURGE_TOKEN -c "$LIB"
+fi

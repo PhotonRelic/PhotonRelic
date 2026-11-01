@@ -27,14 +27,30 @@ export function depsFromEnv(env: Env): AppDeps {
     ? new CloudflareAccessVerifier(env.ACCESS_TEAM_DOMAIN, env.ACCESS_AUD)
     : new FixedIdentityVerifier({ email: env.DEV_IDENTITY ?? 'dev@localhost', kind: 'user' });
   const usage = usageConfigFromVars(env.CF_ACCOUNT_ID, env.ANALYTICS_TOKEN, env.USAGE_DATASET);
+  const mediaOrigin = env.MEDIA_ORIGIN ? env.MEDIA_ORIGIN.replace(/\/$/, '') : null;
+  // Half a purge configuration is a deploy that meant to purge and will not: fail loudly.
+  if (Boolean(env.CF_ZONE_ID) !== Boolean(env.CACHE_PURGE_TOKEN)) {
+    throw new Error('CF_ZONE_ID and CACHE_PURGE_TOKEN must be set together');
+  }
+  if (env.CF_ZONE_ID && !mediaOrigin) {
+    throw new Error('CF_ZONE_ID needs MEDIA_ORIGIN: there are no URLs to purge without it');
+  }
   return {
     db: env.DB,
     access,
     media: env.MEDIA ? new R2MediaBucket(env.MEDIA) : null,
     layout: layoutFromVars(env.UPLOAD_PREFIX, env.LIBRARY_PREFIXES),
-    mediaOrigin: env.MEDIA_ORIGIN ? env.MEDIA_ORIGIN.replace(/\/$/, '') : null,
+    mediaOrigin,
     usage: usage ? new AnalyticsEngineUsage(usage) : null,
     menu: menuFromLists(env.MEDIA_WIDTHS, env.MEDIA_ASPECTS),
+    purge:
+      env.CF_ZONE_ID && env.CACHE_PURGE_TOKEN
+        ? {
+            zoneId: env.CF_ZONE_ID,
+            token: env.CACHE_PURGE_TOKEN,
+            fetch: (url, init) => fetch(url, init),
+          }
+        : null,
     environment: env.ENVIRONMENT,
     now: () => new Date(),
   };

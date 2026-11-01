@@ -1,10 +1,12 @@
 // PhotonRelic's uploader. Pure functions first, so they can be unit-tested in
-// Node; the DOM glue at the bottom runs only on the Upload page. No framework:
-// the page is server-rendered and this adds the drop zone, hashing, precheck
-// and the four-at-a-time streamed PUTs. Nothing is resized here: a file over
-// the cap is refused and prepared on your machine with tools/prep-images.py.
-// What the prep tool strips (capture date, camera, lens) travels with the
-// upload instead: from its manifest, or read from an unprepped file's EXIF.
+// Node; the DOM glue at the bottom runs on the Upload page and, for Replace,
+// on a file page. No framework: the pages are server-rendered and this adds
+// the drop zone, hashing, precheck and the four-at-a-time streamed PUTs, and
+// the one-file replace that shares the hasher. Nothing is resized here: a
+// file over the cap is refused and prepared on your machine with
+// tools/prep-images.py. What the prep tool strips (capture date, camera,
+// lens) travels with the upload instead: from its manifest, or read from an
+// unprepped file's EXIF.
 
 export const UPLOAD_EXT = /\.(jpe?g|png|webp|avif|gif)$/i;
 /** Formats a shoot exports that the store never takes as they are. */
@@ -110,6 +112,25 @@ export function chunk(list, size) {
 }
 
 export const fmtBytes = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`);
+
+/** The extension a key or file name ends in, lowercase, jpeg folded to jpg; '' without one. */
+export function extensionOf(name) {
+	const m = /\.([a-z0-9]+)$/i.exec(name);
+	return m ? m[1].toLowerCase().replace(/^jpeg$/, 'jpg') : '';
+}
+
+/**
+ * Why a file cannot replace the object at `key`, before anything is hashed:
+ * the key keeps its extension (pages link to it by name and type), and the
+ * cap is the resizer's. Null when it may go on to the precheck.
+ */
+export function replaceProblem(file, key, maxBytes) {
+	const want = extensionOf(key);
+	const got = extensionOf(file.name);
+	if (got !== want) return `a .${want} file is needed, not .${got || '(none)'}: keys keep their extension`;
+	if (file.size > maxBytes) return `over ${fmtBytes(maxBytes)}, the resizer's cap: resize it with tools/prep-images.py`;
+	return null;
+}
 
 // ---------------------------------------------------------------------------
 // Capture: the date, camera and lens the prep tool strips before upload
@@ -634,4 +655,87 @@ function init() {
 	retryBtn.addEventListener('click', () => void start(true));
 }
 
-if (typeof document !== 'undefined') init();
+/** The file page's Replace: one file, hashed and prechecked, then one PUT over the key. */
+function initReplace() {
+	const root = document.getElementById('pr-replace');
+	if (!root) return;
+	const key = root.dataset.key;
+	const maxBytes = Number(root.dataset.maxBytes);
+	const input = document.getElementById('pr-replace-file');
+	const state = document.getElementById('pr-replace-state');
+	const button = document.getElementById('pr-replace-start');
+	const hash = makeHasher();
+	/** @type {{file: File, sha256: string} | null} */
+	let ready = null;
+
+	const show = (cls, text) => {
+		state.hidden = false;
+		state.className = `upload-summary st st-${cls}`;
+		state.textContent = text;
+	};
+
+	input.addEventListener('change', async () => {
+		const file = input.files[0];
+		ready = null;
+		button.disabled = true;
+		if (!file) return;
+		const problem = replaceProblem(file, key, maxBytes);
+		if (problem) {
+			show('bad-name', `${file.name}: ${problem}`);
+			return;
+		}
+		show('hashing', `${file.name} · hashing`);
+		const sha256 = await hash(file);
+		show('checking', `${file.name} · checking`);
+		try {
+			const res = await fetch('/library/file/replace/precheck', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ key, sha256, size: file.size }),
+			});
+			const body = await res.json();
+			if (!body.ok) throw new Error(body.error || `precheck ${res.status}`);
+			if (body.answer.status !== 'ok') {
+				show(body.answer.status, `${file.name} · ${body.answer.message}`);
+				return;
+			}
+		} catch (e) {
+			show('failed', `precheck: ${e.message}`);
+			return;
+		}
+		ready = { file, sha256 };
+		show('ok', `${file.name} (${fmtBytes(file.size)}) will replace ${key}`);
+		button.disabled = false;
+	});
+
+	button.addEventListener('click', async () => {
+		if (!ready) return;
+		button.disabled = true;
+		input.disabled = true;
+		show('uploading', `replacing ${key}…`);
+		try {
+			const dims = await dimensions(ready.file);
+			const res = await fetch(`/library/file/replace?key=${encodeURIComponent(key)}`, {
+				method: 'PUT',
+				headers: {
+					'content-type': ready.file.type || 'application/octet-stream',
+					'x-sha256': ready.sha256,
+					...(dims.width ? { 'x-width': String(dims.width), 'x-height': String(dims.height) } : {}),
+				},
+				body: ready.file,
+			});
+			const body = await res.json().catch(() => ({}));
+			if (!res.ok || !body.ok) throw new Error(body.error || `HTTP ${res.status}`);
+			// The answer carried a flash cookie; the file page shows it with the new etag and size.
+			location.assign(`/library/file?key=${encodeURIComponent(key)}`);
+		} catch (e) {
+			show('failed', String(e?.message ?? e));
+			input.disabled = false;
+		}
+	});
+}
+
+if (typeof document !== 'undefined') {
+	init();
+	initReplace();
+}

@@ -9,6 +9,7 @@ import { batchAll, type Db } from './db.js';
 import {
   basenameOf,
   IMAGE_KEY,
+  isLibraryKey,
   type MediaBucket,
   type MediaLayout,
   type MediaObject,
@@ -17,6 +18,7 @@ import {
   UPLOAD_MAX_LABEL,
   UPLOAD_SOURCE_TAG,
   uploadKeyPattern,
+  WEB_IMAGE_KEY,
 } from './media.js';
 
 export { IMAGE_KEY };
@@ -98,6 +100,8 @@ export interface SeenReport {
   added: number;
   /** Uploads whose record was missing or lacked its hash, completed from the object's own metadata. */
   completed: number;
+  /** Keys whose object no longer has the etag the library recorded: the bytes were replaced outside. */
+  changed: string[];
 }
 
 const HASH = /^[0-9a-f]{64}$/;
@@ -108,6 +112,9 @@ const HASH = /^[0-9a-f]{64}$/;
  * before the library row is written, so a row that is missing or has no hash
  * (the request was cut off between the two writes) is completed from the
  * object: hash, uploader, source, and the folder as subject when none was set.
+ * A key whose etag no longer matches holds different bytes (rclone, the
+ * dashboard, a Replace that was cut off): its hash and dimensions are no
+ * longer known and are cleared, unless the object carries its own stamp.
  * Nothing a person set is changed.
  */
 export async function noteSeen(
@@ -117,16 +124,21 @@ export async function noteSeen(
   now: Date,
 ): Promise<SeenReport> {
   const images = objects.filter((o) => IMAGE_KEY.test(o.key));
-  if (images.length === 0) return { added: 0, completed: 0 };
+  if (images.length === 0) return { added: 0, completed: 0, changed: [] };
   const before = await getAssets(
     db,
     images.map((o) => o.key),
   );
+  const changed = images.filter((o) => {
+    const row = before.get(o.key);
+    return Boolean(row?.etag && o.etag && row.etag !== o.etag);
+  });
+  const changedKeys = new Set(changed.map((o) => o.key));
   const stamped = images.filter(
     (o) =>
       o.customMetadata?.source === UPLOAD_SOURCE_TAG &&
       HASH.test(o.customMetadata.sha256 ?? '') &&
-      !before.get(o.key)?.sha256,
+      (!before.get(o.key)?.sha256 || changedKeys.has(o.key)),
   );
   await batchAll(db, [
     ...images.map((o) =>
@@ -137,11 +149,16 @@ export async function noteSeen(
         )
         .bind(o.key, o.etag, o.size, now.toISOString()),
     ),
+    ...changed.map((o) =>
+      db
+        .prepare('UPDATE assets SET sha256 = NULL, width = NULL, height = NULL WHERE key = ?1')
+        .bind(o.key),
+    ),
     ...stamped.map((o) =>
       db
         .prepare(
           `UPDATE assets SET sha256 = ?2, source = 'upload',
-             uploaded_by = COALESCE(uploaded_by, ?3),
+             uploaded_by = CASE WHEN ?6 = 1 THEN ?3 ELSE COALESCE(uploaded_by, ?3) END,
              subject = COALESCE(subject, ?4),
              filed_by = COALESCE(filed_by, ?3), filed_at = COALESCE(filed_at, ?5)
            WHERE key = ?1`,
@@ -152,12 +169,14 @@ export async function noteSeen(
           o.customMetadata?.uploadedBy ?? null,
           subjectOf(layout, o.key),
           now.toISOString(),
+          changedKeys.has(o.key) ? 1 : 0,
         ),
     ),
   ]);
   return {
     added: images.filter((o) => !before.has(o.key)).length,
     completed: stamped.length,
+    changed: changed.map((o) => o.key),
   };
 }
 
@@ -316,6 +335,41 @@ export function parseCaptureHeader(raw: string | undefined): ParsedCapture {
     problems.push('originalWidth and originalHeight go together.');
   }
   return { capture: Object.keys(capture).length ? capture : null, problems };
+}
+
+/**
+ * New bytes under an existing key, through the file page's Replace. The row
+ * keeps everything a person set (subject, tags, alt text, credit, the retired
+ * state) and its first_seen; what describes the bytes is replaced. A key with
+ * no row yet is recorded as an upload would be.
+ */
+export async function recordReplace(
+  db: Db,
+  layout: MediaLayout,
+  u: UploadRecord,
+  now: Date,
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO assets (key, etag, sha256, bytes, content_type, width, height, subject, source, first_seen, uploaded_by, filed_by, filed_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'upload', ?9, ?10, ?10, ?9)
+       ON CONFLICT(key) DO UPDATE SET etag = excluded.etag, sha256 = excluded.sha256, bytes = excluded.bytes,
+         content_type = excluded.content_type, width = excluded.width, height = excluded.height,
+         source = 'upload', uploaded_by = excluded.uploaded_by`,
+    )
+    .bind(
+      u.key,
+      u.etag,
+      u.sha256,
+      u.bytes,
+      u.content_type,
+      u.width,
+      u.height,
+      subjectOf(layout, u.key),
+      now.toISOString(),
+      u.uploaded_by,
+    )
+    .run();
 }
 
 /** `{name}` is the file name's words, `{subject}` the last subject folder's words. */
@@ -963,6 +1017,48 @@ export async function precheck(
   return answers;
 }
 
+export type ReplaceStatus = 'ok' | 'same-file' | 'too-big' | 'bad-name' | 'missing';
+
+export interface ReplaceAnswer {
+  key: string;
+  status: ReplaceStatus;
+  message: string;
+}
+
+/** The hash the store or the library knows for a key's current bytes, if either does. */
+export const knownSha256 = (
+  head: { customMetadata?: Record<string, string> } | null,
+  asset: Asset | null,
+): string | null => head?.customMetadata?.sha256 ?? asset?.sha256 ?? null;
+
+/**
+ * What the browser asks before it sends a replacement: the key must hold an
+ * object in a web format, the file must be under the cap, and the same bytes
+ * again are refused as a no-op rather than written and purged for nothing.
+ */
+export async function replacePrecheck(
+  db: Db,
+  bucket: MediaBucket,
+  layout: MediaLayout,
+  entry: PrecheckEntry,
+): Promise<ReplaceAnswer> {
+  const { key } = entry;
+  if (!isLibraryKey(layout, key) || !WEB_IMAGE_KEY.test(key))
+    return { key, status: 'bad-name', message: 'Not a key the library can replace.' };
+  if (!HASH.test(entry.sha256))
+    return { key, status: 'bad-name', message: 'No content hash was sent.' };
+  if (entry.size > UPLOAD_MAX_BYTES) return { key, status: 'too-big', message: TOO_BIG };
+  const head = await bucket.head(key);
+  if (!head) return { key, status: 'missing', message: 'This key is not in the bucket.' };
+  if (knownSha256(head, await getAsset(db, key)) === entry.sha256)
+    return {
+      key,
+      status: 'same-file',
+      message: 'The same bytes are already at this key; nothing to replace.',
+    };
+  return { key, status: 'ok', message: 'Ready to replace.' };
+}
+
 // ---------------------------------------------------------------------------
 // Rescan: walk the bucket, refresh what the library knows
 // ---------------------------------------------------------------------------
@@ -972,6 +1068,8 @@ export interface RescanReport {
   added: number;
   /** Upload records completed from the objects' own metadata. */
   completed: number;
+  /** Keys whose bytes were replaced outside the library (the etag moved). */
+  changed: string[];
   /** Rows forgotten because their object is no longer in the store. */
   forgotten: number;
 }
@@ -985,6 +1083,7 @@ export async function rescan(
   let listed = 0;
   let added = 0;
   let completed = 0;
+  const changed: string[] = [];
   const present = new Set<string>();
   for (const prefix of layout.libraryPrefixes) {
     let cursor: string | undefined;
@@ -995,6 +1094,7 @@ export async function rescan(
       const seen = await noteSeen(db, layout, page.objects, now);
       added += seen.added;
       completed += seen.completed;
+      changed.push(...seen.changed);
       cursor = page.cursor ?? undefined;
     } while (cursor);
   }
@@ -1013,5 +1113,5 @@ export async function rescan(
   // The search index is external-content: it trusts the triggers to have kept it in
   // step. A walk of the whole bucket is the moment to make that true from scratch.
   await db.prepare("INSERT INTO assets_fts (assets_fts) VALUES ('rebuild')").run();
-  return { listed, added, completed, forgotten: gone.length };
+  return { listed, added, completed, changed, forgotten: gone.length };
 }

@@ -37,7 +37,8 @@ ACCESS_TEAM_DOMAIN = ""
 # The resizer's public origin, for thumbnails and copied URLs. Unset, previews
 # are streamed from the bucket through this Worker at full size.
 MEDIA_ORIGIN = "http://localhost:8788"
-# The resizer's menu, for the file page's embed markup. Only when the resizer's
+# The resizer's menu, for the file page's embed markup and so a purge after
+# Replace or Delete covers every size the edge may hold. Only when the resizer's
 # wrangler.toml overrides the menu; these must match it, or the copied markup
 # asks for sizes the resizer refuses.
 # MEDIA_WIDTHS = "320,768,1440"
@@ -54,6 +55,12 @@ LIBRARY_PREFIXES = "media/"
 # The token turns it on; without it the file page says "not configured".
 # CF_ACCOUNT_ID = ""
 # USAGE_DATASET = "photonrelic_usage"
+
+# Optional: purge the edge after Replace, Delete and a Rescan that finds
+# changed bytes. The zone the resizer's hostname is in; the token is a secret
+# (`wrangler secret put CACHE_PURGE_TOKEN`) with Zone → Cache Purge → Purge.
+# Unset, cached copies expire on their own within a day.
+# CF_ZONE_ID = ""
 
 [[d1_databases]]
 binding = "DB"
