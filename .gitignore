@@ -10,3 +10,7 @@ dist/
 *.log
 .DS_Store
 __pycache__/
+# Deployment configs are account-specific. Keep yours in deploy/<name>/ (ignored)
+# or in a private repo; deploy/example/ is the template.
+deploy/*
+!deploy/example/

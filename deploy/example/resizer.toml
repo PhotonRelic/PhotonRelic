@@ -1,0 +1,28 @@
+# The public resizer for one deployment: serves the same bucket at its own
+# hostname so the library's thumbnails and copied URLs work. Nothing here is
+# secret.
+name = "photonrelic-example-resizer"
+main = "../../workers/resizer/src/index.ts"
+compatibility_date = "2026-09-01"
+workers_dev = false
+preview_urls = false
+routes = [{ pattern = "img.example.com", custom_domain = true }]
+
+[observability]
+enabled = true
+
+[vars]
+# Must match the library's LIBRARY_PREFIXES.
+SERVED_PREFIXES = "media/"
+# Optional: only pages on these hosts may embed images; include the library's
+# hostname. Unset, any page may embed. See workers/resizer/wrangler.toml.
+# ALLOWED_ORIGINS = "www.example.com, example.com, *.example.com, media-admin.example.com"
+
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "photonrelic-example-media"
+
+# Without Images enabled on the account, objects are served as stored with
+# `x-media-transform: unavailable`.
+[images]
+binding = "IMAGES"
