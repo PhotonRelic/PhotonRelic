@@ -541,3 +541,5 @@ a.facet.active .n { color: var(--pr-accent); }
 .search-count .n, .pager .n { font-family: var(--pr-font-mono); font-weight: 600; font-variant-numeric: tabular-nums; color: var(--pr-accent); }
 .pager { display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; }
 .pager [role=button] { width: auto; margin: 0; }
+.expiring-table .thumb { width: 5rem; }
+.expiring-table form { margin: 0; }

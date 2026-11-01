@@ -1,8 +1,8 @@
 /**
  * The media library pages: the bucket-first browser with selection and the
  * bulk bar, one file, the upload page (with the rclone procedure beside the
- * drop zone), the bulk filing preview, the duplicates view and the unfiled
- * queue.
+ * drop zone), the bulk filing preview, the duplicates view, the unfiled
+ * queue and the expiring view.
  */
 import type {
   Asset,
@@ -11,7 +11,7 @@ import type {
   SearchFilters,
   SearchState,
 } from '../library.js';
-import { altFromPattern, SEARCH_STATES } from '../library.js';
+import { altFromPattern, EXPIRING_DAYS, RIGHTS_MAX, SEARCH_STATES } from '../library.js';
 import {
   basenameOf,
   type MediaLayout,
@@ -24,7 +24,7 @@ import { kb, when } from './layout.js';
 /** How a page builds an image URL for a key; the handler binds it to the deps. */
 export type Preview = (key: string, width?: number) => string;
 
-export type LibraryTab = 'library' | 'search' | 'upload' | 'unfiled' | 'duplicates';
+export type LibraryTab = 'library' | 'search' | 'upload' | 'unfiled' | 'duplicates' | 'expiring';
 
 export function Tabs({ active }: { active: LibraryTab }) {
   const items: [LibraryTab, string, string][] = [
@@ -33,6 +33,7 @@ export function Tabs({ active }: { active: LibraryTab }) {
     ['upload', '/library/upload', 'Upload'],
     ['unfiled', '/library/unfiled', 'Unfiled'],
     ['duplicates', '/library/duplicates', 'Duplicates'],
+    ['expiring', '/library/expiring', 'Expiring'],
   ];
   return (
     <nav class="tabs" aria-label="Library">
@@ -92,6 +93,8 @@ export function sourceLabel(asset: Asset | undefined): string {
 export interface LibraryStats {
   unfiled: number;
   duplicateKeys: number;
+  /** Expired or expiring within EXPIRING_DAYS, not yet retired. */
+  expiring: number;
 }
 
 export function StatsRow({ stats }: { stats: LibraryStats }) {
@@ -105,8 +108,33 @@ export function StatsRow({ stats }: { stats: LibraryStats }) {
     <div class="stat-grid">
       {card(stats.unfiled, 'Unfiled files', '/library/unfiled')}
       {card(stats.duplicateKeys, 'Keys in duplicate groups', '/library/duplicates')}
+      {/* Most libraries never set an expiry; the card appears when there is something to see. */}
+      {stats.expiring ? card(stats.expiring, 'Expiring or expired', '/library/expiring') : null}
     </div>
   );
+}
+
+/** Whole days from `today` to `date`; negative once it has passed. */
+export const daysUntil = (date: string, today: string): number =>
+  Math.round((Date.parse(`${date}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000);
+
+/** The expiry chip for a file: `expired` once the date has passed, `expiring` within the window. */
+export function ExpiryChip({ expiresAt, today }: { expiresAt: string | null; today: string }) {
+  if (!expiresAt) return null;
+  const days = daysUntil(expiresAt, today);
+  if (days < 0)
+    return (
+      <mark class="chip chip-retired" title={`Expired ${expiresAt}`}>
+        expired
+      </mark>
+    );
+  if (days <= EXPIRING_DAYS)
+    return (
+      <mark class="chip chip-unfiled" title={`Expires ${expiresAt}`}>
+        {days === 0 ? 'expires today' : `expires in ${days} day${days === 1 ? '' : 's'}`}
+      </mark>
+    );
+  return null;
 }
 
 export interface Tile {
@@ -196,6 +224,23 @@ export function BulkBar({ back }: { back: string }) {
             name="alt_pattern"
             placeholder={'{subject}, {name}'}
             title="{name} is the file name's words, {subject} the subject folder's"
+          />
+        </label>
+        <label>
+          Licence
+          <input
+            type="text"
+            name="licence"
+            maxlength={RIGHTS_MAX.licence}
+            placeholder="CC BY 4.0 (blank leaves it)"
+          />
+        </label>
+        <label>
+          Expires
+          <input
+            type="date"
+            name="expires_at"
+            title="The day the rights run out; blank leaves it"
           />
         </label>
       </div>
@@ -518,6 +563,7 @@ export function FilePage({
   preview,
   publicUrl,
   hasStore,
+  today,
 }: {
   objectKey: string;
   head: { size: number; contentType: string; etag: string | null } | null;
@@ -525,6 +571,7 @@ export function FilePage({
   preview: Preview;
   publicUrl: string | null;
   hasStore: boolean;
+  today: string;
 }) {
   const filing = filingLabel(asset ?? undefined);
   return (
@@ -596,6 +643,14 @@ export function FilePage({
                   {asset?.uploaded_by ? ` by ${asset.uploaded_by}` : ''}
                 </td>
               </tr>
+              {asset?.expires_at ? (
+                <tr>
+                  <td>Expires</td>
+                  <td class="num">
+                    {asset.expires_at} <ExpiryChip expiresAt={asset.expires_at} today={today} />
+                  </td>
+                </tr>
+              ) : null}
               {publicUrl ? (
                 <tr>
                   <td>URL</td>
@@ -634,6 +689,48 @@ export function FilePage({
               Credit
               <input type="text" name="credit" value={asset?.credit ?? ''} />
             </label>
+            <h4>Rights</h4>
+            <label>
+              Licence
+              <input
+                type="text"
+                name="licence"
+                value={asset?.licence ?? ''}
+                maxlength={RIGHTS_MAX.licence}
+                placeholder="CC BY 4.0, licensed from the photographer…"
+              />
+            </label>
+            <label>
+              Source URL
+              <input
+                type="url"
+                name="source_url"
+                value={asset?.source_url ?? ''}
+                maxlength={RIGHTS_MAX.sourceUrl}
+                placeholder="https://"
+              />
+            </label>
+            <label>
+              Restrictions
+              <textarea
+                name="restrictions"
+                rows={2}
+                maxlength={RIGHTS_MAX.restrictions}
+                placeholder="Editorial only, not for print…"
+              >
+                {asset?.restrictions ?? ''}
+              </textarea>
+            </label>
+            <label>
+              Expires <small class="muted">(the day the rights run out)</small>
+              <input type="date" name="expires_at" value={asset?.expires_at ?? ''} />
+            </label>
+            <p>
+              <small class="muted">
+                A file whose expiry has passed is retired by the daily run and, where the resizer
+                shares this database, answers 410 Gone.
+              </small>
+            </p>
             <button type="submit">Save</button>
           </form>
           <form method="post" action="/library/file/retire" class="retire-form">
@@ -861,6 +958,8 @@ export interface BulkPreview {
   removeTags: string[];
   credit: string | undefined;
   altPattern: string | undefined;
+  licence: string | undefined;
+  expiresAt: string | undefined;
   back: string;
 }
 
@@ -874,6 +973,15 @@ export function BulkPreviewPage({
   const sample = preview.keys.slice(0, 5);
   const hidden = (name: string, value: string | undefined) =>
     value === undefined ? null : <input type="hidden" name={name} value={value} />;
+  /** A one-value field: unchanged when the bar left it blank, cleared when it was sent empty. */
+  const change = (value: string | undefined) =>
+    value === undefined ? (
+      <small class="muted">unchanged</small>
+    ) : value === '' ? (
+      <small class="muted">cleared</small>
+    ) : (
+      value
+    );
   return (
     <>
       <Tabs active="library" />
@@ -905,15 +1013,15 @@ export function BulkPreviewPage({
           </tr>
           <tr>
             <td>Credit</td>
-            <td>
-              {preview.credit === undefined ? (
-                <small class="muted">unchanged</small>
-              ) : preview.credit === '' ? (
-                <small class="muted">cleared</small>
-              ) : (
-                preview.credit
-              )}
-            </td>
+            <td>{change(preview.credit)}</td>
+          </tr>
+          <tr>
+            <td>Licence</td>
+            <td>{change(preview.licence)}</td>
+          </tr>
+          <tr>
+            <td>Expires</td>
+            <td>{change(preview.expiresAt)}</td>
           </tr>
         </tbody>
       </table>
@@ -951,6 +1059,8 @@ export function BulkPreviewPage({
         {hidden('remove_tags', preview.removeTags.join(','))}
         {hidden('credit', preview.credit)}
         {hidden('alt_pattern', preview.altPattern)}
+        {hidden('licence', preview.licence)}
+        {hidden('expires_at', preview.expiresAt)}
         <input type="hidden" name="back" value={preview.back} />
         <div class="page-head">
           <button type="submit">Apply to {preview.keys.length}</button>
@@ -1016,6 +1126,94 @@ export function DuplicatesPage({
             </p>
           </form>
         ))
+      )}
+    </>
+  );
+}
+
+export function ExpiringPage({
+  assets,
+  today,
+  preview,
+}: {
+  assets: Asset[];
+  today: string;
+  preview: Preview;
+}) {
+  return (
+    <>
+      <Tabs active="expiring" />
+      <PageHead title="Expiring">
+        <form method="post" action="/library/expiring/run" class="inline-form">
+          <button
+            type="submit"
+            class="outline"
+            title="Retire every file whose expiry date has passed, as the nightly run would"
+          >
+            Run expiry now
+          </button>
+        </form>
+      </PageHead>
+      <p>
+        <small class="muted">
+          Files whose rights have run out, or run out within {EXPIRING_DAYS} days, soonest first.
+          Each night a run retires every file whose expiry date has passed (today is {today}, UTC);
+          a retired object stays in the bucket, and where the resizer shares this database its URL
+          answers 410 Gone. Retire one early from its row, or open the file to change the date.
+        </small>
+      </p>
+      {assets.length === 0 ? (
+        <p>Nothing expires in the next {EXPIRING_DAYS} days.</p>
+      ) : (
+        <table class="expiring-table">
+          <thead>
+            <tr>
+              <th />
+              <th>Key</th>
+              <th class="num">Expires</th>
+              <th>Licence</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {assets.map((a) => (
+              <tr>
+                <td>
+                  <a href={fileHref(a.key)}>
+                    <img class="thumb" src={preview(a.key, 160)} alt="" loading="lazy" />
+                  </a>
+                </td>
+                <td>
+                  <a href={fileHref(a.key)}>
+                    <code class="path">{a.key}</code>
+                  </a>
+                  {a.restrictions ? (
+                    <p>
+                      <small class="muted">{a.restrictions}</small>
+                    </p>
+                  ) : null}
+                </td>
+                <td class="num">
+                  {a.expires_at} <ExpiryChip expiresAt={a.expires_at} today={today} />
+                </td>
+                <td>
+                  <small>{a.licence ?? ''}</small>
+                </td>
+                <td>
+                  <form method="post" action="/library/file/retire" class="inline-form">
+                    <input type="hidden" name="key" value={a.key} />
+                    <input type="hidden" name="retired" value="1" />
+                    <input type="hidden" name="note" value={`Expires ${a.expires_at}`} />
+                    <input type="hidden" name="back" value="/library/expiring" />
+                    <button type="submit" class="contrast slim">
+                      Retire
+                    </button>
+                  </form>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
     </>
   );

@@ -22,6 +22,11 @@ binding = "ASSETS"
 [observability]
 enabled = true
 
+# The expiry run: every night at 03:00 UTC, retire every file whose
+# `expires_at` has passed. The Expiring page has a button that runs it now.
+[triggers]
+crons = ["0 3 * * *"]
+
 [vars]
 ENVIRONMENT = "local"
 # Your Zero Trust team domain, e.g. "yourteam.cloudflareaccess.com".

@@ -19,6 +19,10 @@ binding = "ASSETS"
 [observability]
 enabled = true
 
+# The nightly expiry run (03:00 UTC) retires files whose `expires_at` has passed.
+[triggers]
+crons = ["0 3 * * *"]
+
 [vars]
 # Anything but "production" is shown as a tag in the library's header.
 ENVIRONMENT = "production"
