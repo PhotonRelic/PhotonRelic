@@ -22,7 +22,20 @@ photo into a second folder, ready to drop on PhotonRelic's Upload page:
     exception: a JPEG keeps its bytes and only loses its tags (the EXIF, XMP,
     IPTC and comment segments are cut out; the colour profile stays); a JPEG
     that needs rotating or is over the cap, and any other format, is re-encoded
-    as above and the table says why.
+    as above and the table says why;
+  * noted, before the tags go, in a manifest the Upload page reads: the capture
+    date and time as the camera wrote them (DateTimeOriginal, or DateTime), the
+    camera (Make and Model), the lens (LensModel) and the original pixel size.
+    It is `photonrelic-manifest.json` in the output folder, keyed by each web
+    copy's name inside that folder, with absent fields left out:
+
+        {"version": 1, "files": {"details/side-view.jpg": {
+          "capturedAt": "2026-05-04T13:22:10", "camera": "Canon EOS R5",
+          "lens": "RF24-70mm F2.8 L IS USM", "originalWidth": 6000, "originalHeight": 4000}}}
+
+    Nothing else is read from the EXIF: no GPS, no serial numbers, no artist or
+    owner name. Drop the folder with the manifest in it and the uploader sends
+    each file's entry along and leaves the manifest itself behind.
 
 Nothing is written over an original and no output is overwritten unless
 --force. Run it with no size flag to be asked.
@@ -42,6 +55,7 @@ __version__ = "1.0"
 
 import argparse
 import io
+import json
 import math
 import re
 import sys
@@ -270,6 +284,77 @@ def strip_jpeg(data: bytes) -> bytes:
     return bytes(out)
 
 
+# The capture data the manifest keeps. Only these tags are read: the reader never
+# touches the GPS IFD (0x8825), the serial numbers (0xA431, 0xA435), Artist (0x013B)
+# or Copyright (0x8298), so nothing private can reach the manifest by accident.
+MANIFEST_NAME = "photonrelic-manifest.json"
+TAG_MAKE, TAG_MODEL, TAG_DATETIME, TAG_EXIF_IFD = 0x010F, 0x0110, 0x0132, 0x8769
+TAG_DATETIME_ORIGINAL, TAG_LENS_MODEL = 0x9003, 0xA434
+EXIF_DATE = re.compile(r"^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})$")
+
+
+def exif_text(value: object) -> str | None:
+    """An ASCII tag as a clean string: bytes decoded, NULs and whitespace trimmed, empty as None."""
+    if isinstance(value, bytes):
+        value = value.decode("latin-1", "replace")
+    if not isinstance(value, str):
+        return None
+    text = value.replace("\0", "").strip()
+    return text or None
+
+
+def exif_date_to_iso(value: str) -> str | None:
+    """"2026:05:04 13:22:10" as the camera writes it, to ISO 8601 with no timezone guessed."""
+    m = EXIF_DATE.match(value.strip())
+    if not m or m.group(1) == "0000":  # some cameras write all zeros when the clock was never set
+        return None
+    y, mo, d, h, mi, s = m.groups()
+    return f"{y}-{mo}-{d}T{h}:{mi}:{s}"
+
+
+def join_camera(make: str | None, model: str | None) -> str | None:
+    """Make and model as one name; a model that already starts with the make's first word
+    ("Canon" / "Canon EOS R5", "NIKON CORPORATION" / "NIKON Z 6") is not said twice."""
+    if not make or not model:
+        return model or make
+    first = make.split()[0].lower()
+    return model if model.lower().startswith(first) else f"{make} {model}"
+
+
+def read_capture(path: Path) -> dict:
+    """The capture fields of an original, from its EXIF; {} for a file with none."""
+    out: dict = {}
+    try:
+        with Image.open(path) as img:
+            exif = img.getexif()
+            ifd0 = {t: exif_text(exif.get(t)) for t in (TAG_MAKE, TAG_MODEL, TAG_DATETIME)}
+            try:
+                sub = exif.get_ifd(TAG_EXIF_IFD)
+            except Exception:  # a broken Exif IFD is not a reason to lose the make and model
+                sub = {}
+            taken = exif_text(sub.get(TAG_DATETIME_ORIGINAL)) or ifd0[TAG_DATETIME]
+            lens = exif_text(sub.get(TAG_LENS_MODEL))
+    except Exception:
+        return out
+    when = exif_date_to_iso(taken) if taken else None
+    if when:
+        out["capturedAt"] = when
+    camera = join_camera(ifd0[TAG_MAKE], ifd0[TAG_MODEL])
+    if camera:
+        out["camera"] = camera
+    if lens:
+        out["lens"] = lens
+    return out
+
+
+def write_manifest(out_dir: Path, files: dict[str, dict]) -> Path:
+    """The manifest beside the web copies; sorted keys, so two runs of the same shoot diff cleanly."""
+    path = out_dir / MANIFEST_NAME
+    body = {"version": 1, "files": {k: files[k] for k in sorted(files)}}
+    path.write_text(json.dumps(body, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return path
+
+
 def within_limits(long_edge: int, img: Image.Image) -> int:
     """Clamp a long edge to the transformation limits (12,000 px, 100 megapixels)."""
     w, h = img.size
@@ -479,6 +564,7 @@ def run(argv: list[str] | None = None) -> int:
     failures = 0
     before_total = 0
     after_total = 0
+    manifest: dict[str, dict] = {}  # web copy's name in the output folder → its capture entry
     for j in jobs:
         before = j.src.stat().st_size
         try:
@@ -494,6 +580,13 @@ def run(argv: list[str] | None = None) -> int:
             failures += 1
             print(f"{'FAIL':5} {j.src.name:<{nw}}   the output is the original itself")
             continue
+        # The original's capture data, read before its tags are gone for good; the pixel size
+        # is the original's after orientation, the same way round as the web copy.
+        manifest[rel.replace("\\", "/")] = {
+            **read_capture(j.src),
+            "originalWidth": src_px[0],
+            "originalHeight": src_px[1],
+        }
         if out.exists() and not a.force and not a.dry_run:
             failures += 1
             kept = out.stat().st_size
@@ -508,6 +601,12 @@ def run(argv: list[str] | None = None) -> int:
     verb = "planned" if a.dry_run else "prepared"
     done = len(jobs) - failures
     print(f"\n{done} of {len(jobs)} {verb}: {fmt_bytes(before_total)} → {fmt_bytes(after_total)} ({fmt_saved(before_total, after_total)}) in {out_dir}" + (f"; {failures} not written" if failures else ""))
+    if manifest and not a.dry_run:
+        # Written for every copy in the folder, kept ones included, so the manifest is whole
+        # after a second run; a copy that failed has no entry.
+        write_manifest(out_dir, manifest)
+        dated = sum(1 for m in manifest.values() if "capturedAt" in m)
+        print(f"Capture data for {len(manifest)} file(s), {dated} with a date, in {MANIFEST_NAME}: the Upload page reads it.")
     if not a.dry_run and failures < len(jobs):
         print("Next: PhotonRelic › Upload, give the shoot its subject, drop this folder.")
     return 1 if failures else 0

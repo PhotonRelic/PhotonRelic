@@ -27,10 +27,15 @@ interface Row {
   alt_default: string;
   credit: string | null;
   first_seen: string;
+  captured_at: string | null;
+  camera: string | null;
+  lens: string | null;
+  original_width: number | null;
+  original_height: number | null;
 }
 
 const COLUMNS =
-  'key, bytes, content_type, width, height, subject, tags, alt_default, credit, first_seen';
+  'key, bytes, content_type, width, height, subject, tags, alt_default, credit, first_seen, captured_at, camera, lens, original_width, original_height';
 
 function fromRow(r: Row): AssetRecord {
   let tags: string[] = [];
@@ -51,6 +56,11 @@ function fromRow(r: Row): AssetRecord {
     alt: r.alt_default,
     credit: r.credit,
     firstSeen: r.first_seen,
+    capturedAt: r.captured_at,
+    camera: r.camera,
+    lens: r.lens,
+    originalWidth: r.original_width,
+    originalHeight: r.original_height,
   };
 }
 

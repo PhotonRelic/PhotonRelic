@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { recentActions } from '../src/audit.js';
-import { getAsset, listDuplicates, noteSeen } from '../src/library.js';
+import { getAsset, listDuplicates, noteSeen, parseCaptureHeader } from '../src/library.js';
 import { layoutFromVars, subjectOf, uploadKeyPattern } from '../src/media.js';
 import type { UsageCounts, UsageReader } from '../src/usage.js';
 import { bytes, harness, ORIGIN, STAFF } from './helpers.js';
@@ -194,6 +194,132 @@ describe('upload', () => {
     const h = harness({ media: null });
     expect((await h.put('media/x/a.jpg', bytes('a'))).status).toBe(503);
     expect(await (await h.req('/library/upload')).text()).toContain('No media bucket');
+  });
+});
+
+describe('capture', () => {
+  const entry = {
+    capturedAt: '2026-05-04T13:22:10',
+    camera: 'Canon EOS R5',
+    lens: 'RF24-70mm F2.8 L IS USM',
+    originalWidth: 6000,
+    originalHeight: 4000,
+  };
+  const header = (o: unknown) => encodeURIComponent(JSON.stringify(o));
+
+  it('reads the header, ignores unknown keys and drops a bad field on its own', () => {
+    expect(parseCaptureHeader(undefined)).toEqual({ capture: null, problems: [] });
+    expect(parseCaptureHeader('')).toEqual({ capture: null, problems: [] });
+    expect(parseCaptureHeader(header({ ...entry, gps: '51.5,-0.1', serial: '1' }))).toEqual({
+      capture: entry,
+      problems: [],
+    });
+    // Dates as a camera writes them, with or without a time, with an offset when it gave one.
+    for (const ok of ['2026-05-04', '2026-05-04T13:22', '2026-05-04T13:22:10.500+02:00'])
+      expect(parseCaptureHeader(header({ capturedAt: ok })).capture).toEqual({ capturedAt: ok });
+    const bad = parseCaptureHeader(
+      header({
+        capturedAt: '2026:05:04 13:22:10',
+        camera: ' Leica Q3 ',
+        lens: 'x'.repeat(121),
+        originalWidth: 6000,
+        originalHeight: 'tall',
+      }),
+    );
+    expect(bad.capture).toEqual({ camera: 'Leica Q3' });
+    expect(bad.problems).toEqual([
+      'capturedAt: not an ISO 8601 date.',
+      'lens: not a short line of text.',
+      'originalHeight: not a whole number of pixels.',
+      'originalWidth and originalHeight go together.',
+    ]);
+    expect(parseCaptureHeader(header({ camera: 'bad\u0000name' })).capture).toBeNull();
+    expect(
+      parseCaptureHeader(header({ originalWidth: 0, originalHeight: 1.5 })).capture,
+    ).toBeNull();
+    expect(parseCaptureHeader(header({ camera: 'Leica' })).capture).toEqual({ camera: 'Leica' });
+  });
+
+  it('drops a header it cannot read, with a reason, rather than failing', () => {
+    expect(parseCaptureHeader('%7B').problems).toEqual(['X-Capture is not percent-encoded JSON.']);
+    expect(parseCaptureHeader('%E0%A4%A').problems).toEqual([
+      'X-Capture is not percent-encoded JSON.',
+    ]);
+    expect(parseCaptureHeader(header([1, 2])).problems).toEqual([
+      'X-Capture is not a JSON object.',
+    ]);
+    expect(parseCaptureHeader(header('text')).problems).toEqual([
+      'X-Capture is not a JSON object.',
+    ]);
+    expect(parseCaptureHeader(header(null)).problems).toEqual(['X-Capture is not a JSON object.']);
+    const long = parseCaptureHeader(header({ camera: 'x'.repeat(3000) }));
+    expect(long.capture).toBeNull();
+    expect(long.problems[0]).toContain('over');
+  });
+
+  it('records the fields with the upload and keeps them through a retry without them', async () => {
+    const h = harness();
+    const a = bytes('image-a');
+    const res = await h.put('media/products/chairs/a.jpg', a, {
+      'x-width': '2048',
+      'x-height': '1365',
+      'x-capture': header(entry),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { warnings?: string[] }).not.toHaveProperty('warnings');
+    expect(await getAsset(h.db, 'media/products/chairs/a.jpg')).toMatchObject({
+      captured_at: '2026-05-04T13:22:10',
+      camera: 'Canon EOS R5',
+      lens: 'RF24-70mm F2.8 L IS USM',
+      original_width: 6000,
+      original_height: 4000,
+    });
+    const page = await (await h.req('/library/file?key=media%2Fproducts%2Fchairs%2Fa.jpg')).text();
+    expect(page).toContain('<h4>Capture</h4>');
+    expect(page).toContain('2026-05-04 13:22');
+    expect(page).toContain('Canon EOS R5');
+    expect(page).toContain('RF24-70mm F2.8 L IS USM');
+    expect(page).toContain('6000 × 4000 · stored at 2048 × 1365');
+
+    // The same bytes again, from a retry that read no EXIF: the record is not blanked.
+    const again = await h.put('media/products/chairs/a.jpg', a);
+    expect(((await again.json()) as { completed?: boolean }).completed).toBe(true);
+    expect(await getAsset(h.db, 'media/products/chairs/a.jpg')).toMatchObject({
+      captured_at: '2026-05-04T13:22:10',
+      camera: 'Canon EOS R5',
+      original_width: 6000,
+    });
+  });
+
+  it('uploads normally without the header, or with one it cannot use', async () => {
+    const h = harness();
+    const plain = await h.put('media/x/plain.jpg', bytes('plain'));
+    expect(plain.status).toBe(200);
+    const asset = await getAsset(h.db, 'media/x/plain.jpg');
+    expect(asset).toMatchObject({
+      captured_at: null,
+      camera: null,
+      lens: null,
+      original_width: null,
+    });
+    expect(await (await h.req('/library/file?key=media%2Fx%2Fplain.jpg')).text()).not.toContain(
+      '<h4>Capture</h4>',
+    );
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const odd = await h.put('media/x/odd.jpg', bytes('odd'), { 'x-capture': 'not%20json' });
+    expect(odd.status).toBe(200);
+    expect(((await odd.json()) as { warnings?: string[] }).warnings).toEqual([
+      'X-Capture is not percent-encoded JSON.',
+    ]);
+    expect(warn).toHaveBeenCalledOnce();
+    warn.mockRestore();
+    expect((await getAsset(h.db, 'media/x/odd.jpg'))?.source).toBe('upload');
+
+    // Rescan knows nothing about EXIF: a file found in the bucket has no capture data.
+    await h.media.put('media/x/found.jpg', bytes('found'), 'image/jpeg');
+    await h.form('/library/rescan', []);
+    expect((await getAsset(h.db, 'media/x/found.jpg'))?.captured_at).toBeNull();
   });
 });
 

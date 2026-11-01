@@ -3,6 +3,8 @@
 // the page is server-rendered and this adds the drop zone, hashing, precheck
 // and the four-at-a-time streamed PUTs. Nothing is resized here: a file over
 // the cap is refused and prepared on your machine with tools/prep-images.py.
+// What the prep tool strips (capture date, camera, lens) travels with the
+// upload instead: from its manifest, or read from an unprepped file's EXIF.
 
 export const UPLOAD_EXT = /\.(jpe?g|png|webp|avif|gif)$/i;
 /** Formats a shoot exports that the store never takes as they are. */
@@ -110,6 +112,187 @@ export function chunk(list, size) {
 export const fmtBytes = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`);
 
 // ---------------------------------------------------------------------------
+// Capture: the date, camera and lens the prep tool strips before upload
+// ---------------------------------------------------------------------------
+
+/** Written by tools/prep-images.py into the output folder; never uploaded. */
+export const MANIFEST_NAME = 'photonrelic-manifest.json';
+const CAPTURE_KEYS = ['capturedAt', 'camera', 'lens', 'originalWidth', 'originalHeight'];
+
+/** The dropped entry that is the manifest, if the folder has one at any level. */
+export function findManifest(entries) {
+	return entries.find((e) => (e.relativePath || '').split('/').pop() === MANIFEST_NAME) ?? null;
+}
+
+/**
+ * Pair each dropped file with its manifest entry. The manifest sits in the
+ * output folder's root, so a file's name in it is its path relative to the
+ * manifest's own folder ("details/side-view.jpg"). Only the capture keys are
+ * taken, and only when the version is one this uploader knows: the server
+ * checks the values. Returns a Map from relativePath to the entry.
+ */
+export function matchManifest(entries, manifestPath, manifest) {
+	const out = new Map();
+	if (!manifest || manifest.version !== 1 || typeof manifest.files !== 'object' || manifest.files === null) return out;
+	const dir = manifestPath.slice(0, manifestPath.lastIndexOf('/') + 1);
+	for (const e of entries) {
+		const path = e.relativePath || '';
+		if (!path.startsWith(dir)) continue;
+		const row = manifest.files[path.slice(dir.length)];
+		if (typeof row !== 'object' || row === null) continue;
+		const entry = {};
+		for (const k of CAPTURE_KEYS) if (row[k] !== undefined && row[k] !== null) entry[k] = row[k];
+		if (Object.keys(entry).length) out.set(path, entry);
+	}
+	return out;
+}
+
+/** The X-Capture header: JSON, percent-encoded so a camera name is ASCII-safe in a header. */
+export const captureHeader = (entry) => encodeURIComponent(JSON.stringify(entry));
+
+// A small reader of its own rather than a vendored library: the page needs four
+// tags from IFD0 and the Exif IFD, nothing a full parser offers, and a reader
+// that never visits the GPS IFD, the serial-number tags or Artist cannot leak
+// them by accident. Every offset is bounds-checked; anything odd returns what
+// was read so far, never throws.
+const TAG_MAKE = 0x010f;
+const TAG_MODEL = 0x0110;
+const TAG_DATETIME = 0x0132;
+const TAG_EXIF_IFD = 0x8769;
+const TAG_DATETIME_ORIGINAL = 0x9003;
+const TAG_LENS_MODEL = 0xa434;
+const ASCII = 2;
+const TYPE_SIZE = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 9: 4, 10: 8 };
+const latin1 = new TextDecoder('latin1');
+
+/** "2026:05:04 13:22:10" as the camera writes it, to ISO 8601 without a guessed timezone. */
+export function exifDateToIso(s) {
+	const m = /^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(s.trim());
+	if (!m || m[1] === '0000') return null; // some cameras write all zeros when the clock is unset
+	return `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}`;
+}
+
+/** Make and model as one name; a model that already starts with the make's first word
+ * ("Canon" / "Canon EOS R5", "NIKON CORPORATION" / "NIKON Z 6") is not said twice. */
+export function joinCamera(make, model) {
+	const m = (make || '').trim();
+	const d = (model || '').trim();
+	if (!m || !d) return d || m;
+	const first = m.split(/\s+/)[0].toLowerCase();
+	return d.toLowerCase().startsWith(first) ? d : `${m} ${d}`;
+}
+
+/** The fields from a TIFF structure (what EXIF is) at `base` inside the view. */
+function readTiff(view, base, end) {
+	const out = {};
+	if (base + 8 > end) return out;
+	const le = view.getUint16(base) === 0x4949; // 'II' little-endian, 'MM' big-endian
+	if (view.getUint16(base) !== (le ? 0x4949 : 0x4d4d) || view.getUint16(base + 2, le) !== 0x2a) return out;
+	const u16 = (o) => view.getUint16(o, le);
+	const u32 = (o) => view.getUint32(o, le);
+	const text = (at, count) => {
+		if (at + count > end) return null;
+		const s = latin1.decode(new Uint8Array(view.buffer, view.byteOffset + at, count));
+		const clean = s.replace(/\0+$/, '').trim(); // the NUL terminator is counted
+		return clean || null;
+	};
+	const wanted = {};
+	function ifd(offset, tags) {
+		const at = base + offset;
+		if (at < base || at + 2 > end) return;
+		const n = u16(at);
+		for (let i = 0; i < n; i++) {
+			const e = at + 2 + i * 12;
+			if (e + 12 > end) return;
+			const tag = u16(e);
+			const type = u16(e + 2);
+			const count = u32(e + 4);
+			const size = (TYPE_SIZE[type] || 0) * count;
+			const valueAt = size <= 4 ? e + 8 : base + u32(e + 8); // small values sit inline
+			if (tag === TAG_EXIF_IFD && (type === 4 || type === 3) && count === 1) wanted.exifIfd = type === 4 ? u32(e + 8) : u16(e + 8);
+			else if (tags.includes(tag) && type === ASCII && count > 0 && count <= 256) wanted[tag] = text(valueAt, count);
+		}
+	}
+	ifd(u32(base + 4), [TAG_MAKE, TAG_MODEL, TAG_DATETIME]);
+	if (wanted.exifIfd !== undefined) ifd(wanted.exifIfd, [TAG_DATETIME_ORIGINAL, TAG_LENS_MODEL]);
+	const when = wanted[TAG_DATETIME_ORIGINAL] || wanted[TAG_DATETIME];
+	const iso = when ? exifDateToIso(when) : null;
+	if (iso) out.capturedAt = iso;
+	const make = wanted[TAG_MAKE];
+	const model = wanted[TAG_MODEL];
+	if (make || model) out.camera = joinCamera(make, model);
+	if (wanted[TAG_LENS_MODEL]) out.lens = wanted[TAG_LENS_MODEL];
+	return out;
+}
+
+/**
+ * The capture fields from the start of a file: JPEG (the APP1 Exif segment,
+ * before the first scan), PNG (an eXIf chunk, before IDAT) or WebP (the EXIF
+ * chunk of a VP8X file). The bytes need only reach the metadata; a container
+ * that is not one of these, or has none, gives {}.
+ */
+export function readCapture(bytes) {
+	const view = bytes instanceof ArrayBuffer ? new DataView(bytes) : new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	const end = view.byteLength;
+	const tiffAt = (at, len) => {
+		// Some writers put the JPEG prefix "Exif\0\0" in a PNG or WebP chunk too.
+		if (len >= 6 && view.getUint32(at) === 0x45786966 && view.getUint16(at + 4) === 0) return readTiff(view, at + 6, Math.min(end, at + len));
+		return readTiff(view, at, Math.min(end, at + len));
+	};
+	try {
+		if (end >= 4 && view.getUint16(0) === 0xffd8) {
+			let i = 2;
+			while (i + 4 <= end) {
+				if (view.getUint8(i) !== 0xff) return {};
+				const marker = view.getUint8(i + 1);
+				if (marker === 0xff) {
+					i += 1;
+					continue;
+				}
+				if (marker === 0xda || marker === 0xd9) return {}; // the scan: no Exif segment came before it
+				const length = view.getUint16(i + 2);
+				// APP1 also carries XMP; only the segment that starts "Exif\0\0" is the one wanted.
+				if (marker === 0xe1 && length > 8 && i + 10 <= end && view.getUint32(i + 4) === 0x45786966 && view.getUint16(i + 8) === 0)
+					return tiffAt(i + 4, length - 2);
+				i += 2 + length;
+			}
+			return {};
+		}
+		if (end >= 8 && view.getUint32(0) === 0x89504e47) {
+			let i = 8;
+			while (i + 8 <= end) {
+				const length = view.getUint32(i);
+				const type = view.getUint32(i + 4);
+				if (type === 0x65584966) return tiffAt(i + 8, length); // 'eXIf'
+				if (type === 0x49444154 || type === 0x49454e44) return {}; // 'IDAT' or 'IEND': no metadata chunk before the pixels
+				i += 12 + length;
+			}
+			return {};
+		}
+		if (end >= 12 && view.getUint32(0) === 0x52494646 && view.getUint32(8) === 0x57454250) {
+			let i = 12;
+			while (i + 8 <= end) {
+				const type = view.getUint32(i);
+				const length = view.getUint32(i + 4, true);
+				if (type === 0x45584946) return tiffAt(i + 8, length); // 'EXIF'
+				i += 8 + length + (length & 1);
+			}
+			return {};
+		}
+	} catch {
+		// an offset past the end of what was read: nothing usable
+	}
+	return {};
+}
+
+/** A WebP whose VP8X header says there is an EXIF chunk; it sits after the pixels, so the whole file is needed. */
+export function webpHasExif(bytes) {
+	const b = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : bytes;
+	if (b.length < 21 || b[0] !== 0x52 || b[8] !== 0x57 || b[12] !== 0x56 || b[13] !== 0x50 || b[14] !== 0x38 || b[15] !== 0x58) return false;
+	return (b[20] & 0x08) !== 0;
+}
+
+// ---------------------------------------------------------------------------
 // Browser glue
 // ---------------------------------------------------------------------------
 
@@ -148,6 +331,34 @@ async function dimensions(file) {
 		return d;
 	} catch {
 		return { width: null, height: null };
+	}
+}
+
+// Enough of a file for its metadata: a JPEG's APP1 segment is at most 64 KB
+// and sits before the scan, and a PNG's eXIf chunk comes before IDAT. A WebP
+// keeps EXIF after the pixels, so only a WebP that says it has some is read whole.
+const HEAD_BYTES = 1 << 20;
+const EXIF_EXT = /\.(jpe?g|png|webp)$/i;
+
+/** The capture fields from a file's own EXIF, for a file the manifest did not cover. */
+async function captureFrom(file, key) {
+	if (!EXIF_EXT.test(key)) return {};
+	try {
+		const head = await file.slice(0, HEAD_BYTES).arrayBuffer();
+		const bytes = webpHasExif(head) && file.size > HEAD_BYTES ? await file.arrayBuffer() : head;
+		return readCapture(bytes);
+	} catch {
+		return {};
+	}
+}
+
+/** The prep tool's manifest, parsed, or null when the drop has none or it is not readable. */
+async function readManifest(entry) {
+	if (!entry) return null;
+	try {
+		return JSON.parse(await entry.file.text());
+	} catch {
+		return null;
 	}
 }
 
@@ -223,7 +434,7 @@ function init() {
 	const countEl = document.getElementById('pr-upload-count');
 	const hash = makeHasher();
 
-	/** @type {Array<{file: File, relativePath: string, key: string|null, problem: string|null, state: string, message: string, sha256?: string, row?: HTMLTableRowElement}>} */
+	/** @type {Array<{file: File, relativePath: string, key: string|null, problem: string|null, state: string, message: string, sha256?: string, capture?: object|null, row?: HTMLTableRowElement}>} */
 	let rows = [];
 
 	const setState = (r, state, message = '') => {
@@ -348,14 +559,19 @@ function init() {
 			return;
 		}
 		subjectInput.setCustomValidity('');
+		// A prepped folder carries the capture data its files lost; the manifest itself never goes up.
+		const manifestEntry = findManifest(entries);
+		const captures = manifestEntry ? matchManifest(entries, manifestEntry.relativePath, await readManifest(manifestEntry)) : new Map();
 		const proposals = proposeKeys(
-			entries.map((e) => ({ name: e.file.name, size: e.file.size, relativePath: e.relativePath, file: e.file })),
+			entries
+				.filter((e) => e !== manifestEntry)
+				.map((e) => ({ name: e.file.name, size: e.file.size, relativePath: e.relativePath, file: e.file })),
 			subject,
 			{ keepFolders: keepFolders.checked, prefix },
 		);
 		const fresh = proposals
 			.filter((p) => !rows.some((r) => r.relativePath === p.file.relativePath && r.file.size === p.file.size))
-			.map((p) => ({ file: p.file.file, relativePath: p.file.relativePath, key: p.key, problem: p.problem, state: p.problem ? 'skipped' : 'waiting', message: p.problem || '' }));
+			.map((p) => ({ file: p.file.file, relativePath: p.file.relativePath, key: p.key, problem: p.problem, state: p.problem ? 'skipped' : 'waiting', message: p.problem || '', capture: captures.get(p.file.relativePath) ?? null }));
 		rows = [...rows, ...fresh];
 		render();
 		await check(fresh);
@@ -379,7 +595,10 @@ function init() {
 		};
 		const dims = await dimensions(r.file);
 		const dimHeaders = dims.width ? { 'x-width': String(dims.width), 'x-height': String(dims.height) } : {};
-		await put(r.key, r.file, { sha256: r.sha256, headers: dimHeaders });
+		// The manifest's entry when the shoot was prepped; the file's own EXIF when it was not.
+		const capture = r.capture ?? (await captureFrom(r.file, r.key));
+		const captureHeaders = Object.keys(capture).length ? { 'x-capture': captureHeader(capture) } : {};
+		await put(r.key, r.file, { sha256: r.sha256, headers: { ...dimHeaders, ...captureHeaders } });
 	}
 
 	async function start(onlyFailed = false) {
