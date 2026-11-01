@@ -26,6 +26,7 @@ GET /media/products/chair.jpg?w=320&ar=1:1&f=webp  320 × 320 cover crop, WebP
 - **Widths:** 160, 320, 480, 768, 1024, 1440 and 2048. **Aspect ratios:** 1:1, 4:3, 3:2, 8:5 and 16:9. **Formats:** `avif`, `webp`, `jpeg` and `auto` (the default, which picks avif, then webp, then jpeg from the `Accept` header).
 - Anything off the menu gets a 400. A fixed menu limits how many unique transformations anyone can request, and so limits your Images bill. To change the menu, set `MEDIA_WIDTHS` and `MEDIA_ASPECTS` in `wrangler.toml`.
 - Only keys under `SERVED_PREFIXES` with an image extension are served. SVG is never served.
+- A cover crop (`?ar=`) is cut around the focal point set in the library when the resizer has the `DB` binding (see the metadata API below); without a point, or without the binding, Cloudflare Images picks the crop (`gravity: auto`). Plain widths are never cropped, so the point does not touch them.
 - Resized output is cached at the edge for a day (`s-maxage=86400`). A source over the Images binding's 20 MB input cap, or a deployment without the binding, is served as stored with an `x-media-transform` header saying why.
 - By default any site can embed the images: every response carries `Access-Control-Allow-Origin: *` and `Cross-Origin-Resource-Policy: cross-origin`.
 - Given the library's database (a read-only `DB` binding, commented out in `wrangler.toml`), a key whose rights have expired (the library's **Expires** date has passed) answers `410 Gone` with code `EXPIRED` on a cache miss, before any transform. A copy already at the edge serves out its day; the 410 is not cached, so a new date takes effect at once. Without the binding, expiry only retires the file in the library and the resizer serves it as before.
@@ -54,10 +55,13 @@ GET /api/v1/assets?prefix=media/products/&tag=hero&limit=50   a page, in key ord
     "tags": ["hero", "oak"],
     "alt": "Oak chair, three-quarter view",
     "credit": "Studio",
-    "firstSeen": "2026-10-01T09:12:44.000Z"
+    "firstSeen": "2026-10-01T09:12:44.000Z",
+    "focal": { "x": 0.42, "y": 0.3 }
   }
 }
 ```
+
+`focal` is the point a crop keeps, as fractions of the width and height from the top-left, or `null` when the library left it to the resizer; a site that crops with CSS can hand it to `object-position` as percentages.
 
 - The listing takes `prefix` (must be under `SERVED_PREFIXES`), `subject`, `tag`, `limit` (default 100, at most 500) and `cursor`; it answers `{ ok, assets, cursor }`, and `cursor` is null on the last page. Anything else in the query string is a 400.
 - Only what the library filed is served: the hashes, the audit log and who filed what stay behind Access. A retired key is a 404 here even though it still serves as an image, and a key outside `SERVED_PREFIXES` is a 404 too. Without the binding every call is a 404 with the code `API_UNAVAILABLE`; images are unaffected.
@@ -97,6 +101,7 @@ pictureMarkup('https://img.example.com', 'media/products/chair.jpg', {
 - **Search.** The box in the header, or the Search tab, finds files by any word of their path, subject, tags, default alt text or credit; the last word matches as a prefix, so results appear as you type. Results can be narrowed by subject, by tag and by state (unfiled, filed, retired), each a link beside the results with its count, and filters work with no words at all: *unfiled* with no query is the unfiled queue, *retired* is everything retired. Matches are ranked by relevance (a hit in the subject or tags outranks one in the path); without a query the newest come first. Results are tiles like the Library's, so a page of them can be selected and filed in bulk. The index is an FTS5 table in D1 kept in step by triggers, and only files the library has seen are in it: something put in the bucket some other way is found after a Rescan, which also rebuilds the index.
 - **Rights.** A file page records a licence, a source URL (http or https), restrictions, and an expiry date (`YYYY-MM-DD`, the day the rights run out). The audit row for a save lists which fields changed.
 - **Expiring.** The Expiring view lists files already expired and files expiring within 30 days, soonest first, each with a Retire button; the Library page shows a count when there are any. Every night at 03:00 UTC a cron run (`[triggers]` in `wrangler.toml`) retires every file whose expiry date has passed, with the note `Expired <date>`, one audit row per file as `system:expiry` and one `library.expiry_run` row for the run; the run touches only files not yet retired, so repeating it changes nothing. **Run expiry now** on the Expiring view does the same at once, and its audit row names who asked. A retired object stays in the bucket; with the resizer's database binding its URL answers 410.
+- **Focal point.** On a file's page, click the part of the image a crop must keep (a face, a label, the product) and save. Every `?ar=` size the resizer cuts from then on is cropped around that point, and the metadata API carries it so a site cropping with CSS can set `object-position` itself; plain widths are never cropped. **Automatic** clears it and the resizer chooses again. Saving purges the key's cached sizes when a purge is configured (below); otherwise the old crops refresh within a day. Retired files are left alone.
 - **Duplicates.** Keys with identical bytes (matched by R2 etag or SHA-256) are grouped. Keep one and retire the rest; retired objects keep serving.
 - **Markup.** The file page offers copy-ready embed markup: tick the widths, choose an aspect and `sizes`, and copy a `<picture>` with avif and webp sources and a jpeg fallback, or a plain `<img srcset>`. The alt text is the file's default alt text, and every width and aspect comes from the resizer's menu. It needs `MEDIA_ORIGIN`; if the resizer's menu is not the default, set the library's `MEDIA_WIDTHS` and `MEDIA_ASPECTS` to the same lists.
 - **Access.** The Worker verifies the Cloudflare Access JWT itself on every request, so a misconfigured policy fails closed. Cross-site writes are refused.

@@ -1,7 +1,14 @@
 import { menuFromLists, variantUrls } from '@photonrelic/media-params';
 import { describe, expect, it, vi } from 'vitest';
 import { recentActions } from '../src/audit.js';
-import { getAsset, listDuplicates, noteSeen, parseCaptureHeader } from '../src/library.js';
+import {
+  focalOf,
+  getAsset,
+  listDuplicates,
+  noteSeen,
+  parseCaptureHeader,
+  parseFocal,
+} from '../src/library.js';
 import { layoutFromVars, sniffImageType, subjectOf, uploadKeyPattern } from '../src/media.js';
 import type { UsageCounts, UsageReader } from '../src/usage.js';
 import { bytes, fakePurge, harness, jpeg, ORIGIN, png, STAFF, sha256 } from './helpers.js';
@@ -975,6 +982,156 @@ describe('usage', () => {
     expect(await (await h.req('/library/unused')).text()).toContain(
       'Every file the library knows has been served',
     );
+  });
+});
+
+describe('focal point', () => {
+  const KEY = 'media/portraits/anna.jpg';
+  const FILE = `/library/file?key=${encodeURIComponent(KEY)}`;
+  const focal = (h: ReturnType<typeof harness>, x: string, y: string) =>
+    h.form('/library/file/focal', [
+      ['key', KEY],
+      ['x', x],
+      ['y', y],
+    ]);
+
+  it('has two nullable REAL columns on assets', () => {
+    const h = harness();
+    const cols = h.db.raw.prepare('PRAGMA table_info(assets)').all() as {
+      name: string;
+      type: string;
+      notnull: number;
+    }[];
+    const focalCols = cols.filter((c) => c.name === 'focal_x' || c.name === 'focal_y');
+    expect(focalCols.map((c) => [c.name, c.type, c.notnull])).toEqual([
+      ['focal_x', 'REAL', 0],
+      ['focal_y', 'REAL', 0],
+    ]);
+  });
+
+  it('parses fractions from 0 to 1 with up to four decimals, and both empty as automatic', () => {
+    expect(parseFocal('0.3333', '0.2')).toEqual({ ok: true, focal: { x: 0.3333, y: 0.2 } });
+    expect(parseFocal('0', '1')).toEqual({ ok: true, focal: { x: 0, y: 1 } });
+    expect(parseFocal('1.0000', ' 0.5 ')).toEqual({ ok: true, focal: { x: 1, y: 0.5 } });
+    expect(parseFocal('', '')).toEqual({ ok: true, focal: null });
+    for (const [x, y] of [
+      ['0.5', ''],
+      ['', '0.5'],
+      ['0.33333', '0.2'],
+      ['1.0001', '0.2'],
+      ['-0.1', '0.2'],
+      ['.5', '0.2'],
+      ['abc', '0.2'],
+      ['0.5', '2'],
+      ['1e-1', '0.2'],
+    ]) {
+      expect(parseFocal(x ?? '', y ?? '').ok, `${x},${y}`).toBe(false);
+    }
+  });
+
+  it('saves the point, audits it, purges the key and says so', async () => {
+    const purge = fakePurge();
+    const h = harness({ purge: purge.config });
+    await h.put(KEY, jpeg('anna'));
+    const res = await focal(h, '0.3700', '0.2200');
+    expect(res.status).toBe(303);
+    expect(res.headers.get('location')).toBe(FILE);
+    expect(flashOf(res)).toBe('Focal point saved. Cached copies purged.');
+    expect(await getAsset(h.db, KEY)).toMatchObject({ focal_x: 0.37, focal_y: 0.22 });
+    expect(focalOf(await getAsset(h.db, KEY))).toEqual({ x: 0.37, y: 0.22 });
+    const audit = (await recentActions(h.db))[0];
+    expect(audit).toMatchObject({ action: 'library.focal', actor: STAFF.email, ok: true });
+    expect(audit?.detail).toEqual({ key: KEY, x: 0.37, y: 0.22 });
+    expect(purge.urls()).toEqual(variantUrls('https://img.example.com', KEY));
+  });
+
+  it('clears to automatic on empty values, with its own audit row and purge', async () => {
+    const purge = fakePurge();
+    const h = harness({ purge: purge.config });
+    await h.put(KEY, jpeg('anna'));
+    await focal(h, '0.37', '0.22');
+    purge.calls.length = 0;
+    const res = await focal(h, '', '');
+    expect(flashOf(res)).toBe(
+      'Focal point cleared; crops are automatic again. Cached copies purged.',
+    );
+    expect(await getAsset(h.db, KEY)).toMatchObject({ focal_x: null, focal_y: null });
+    expect((await recentActions(h.db))[0]?.detail).toEqual({ key: KEY, x: null, y: null });
+    expect(purge.urls()).toEqual(variantUrls('https://img.example.com', KEY));
+  });
+
+  it('refuses bad values, a key outside the library and a retired file, changing nothing', async () => {
+    const h = harness();
+    await h.put(KEY, jpeg('anna'));
+    const bad = await focal(h, '0.5', '1.5');
+    expect(bad.headers.get('location')).toBe(FILE);
+    expect(flashOf(bad)).toContain('fractions from 0 to 1');
+    expect(flashOf(await focal(h, '0.5', ''))).toContain('both x and y');
+    const outside = await h.form('/library/file/focal', [
+      ['key', 'private/x.jpg'],
+      ['x', '0.5'],
+      ['y', '0.5'],
+    ]);
+    expect(outside.headers.get('location')).toBe('/library');
+    await h.form('/library/file/retire', [
+      ['key', KEY],
+      ['retired', '1'],
+    ]);
+    expect(flashOf(await focal(h, '0.5', '0.5'))).toContain('retired');
+    expect(await getAsset(h.db, KEY)).toMatchObject({ focal_x: null, focal_y: null });
+    expect((await recentActions(h.db)).some((a) => a.action === 'library.focal')).toBe(false);
+  });
+
+  it('says so without a purge, and logs a failed purge without failing the save', async () => {
+    const h = harness();
+    await h.put(KEY, jpeg('anna'));
+    expect(flashOf(await focal(h, '0.5', '0.5'))).toBe(
+      'Focal point saved. Cached copies refresh within a day.',
+    );
+    const refused = fakePurge(() => Response.json({ success: false }, { status: 500 }));
+    const h2 = harness({ purge: refused.config });
+    await h2.put(KEY, jpeg('anna'));
+    const res = await focal(h2, '0.5', '0.5');
+    expect(flashOf(res)).toContain('The purge failed (HTTP 500)');
+    const [failed, saved] = await recentActions(h2.db);
+    expect(failed).toMatchObject({ action: 'library.purge', ok: false });
+    expect(saved?.action).toBe('library.focal');
+    expect(await getAsset(h2.db, KEY)).toMatchObject({ focal_x: 0.5, focal_y: 0.5 });
+  });
+
+  it('shows the picker through the resizer, with the stored point and the Automatic button', async () => {
+    const h = harness();
+    await h.put(KEY, jpeg('anna'));
+    let html = await (await h.req(FILE)).text();
+    expect(html).toContain('class="focal-pick"');
+    expect(html).toContain('action="/library/file/focal"');
+    expect(html).toContain(
+      `<img src="https://img.example.com/${KEY}?w=1024&amp;f=auto" alt="" draggable="false"/>`,
+    );
+    expect(html).toContain('name="x" value=""');
+    expect(html).toContain('>automatic</td>');
+    expect(html).not.toContain('>Automatic</button>');
+
+    await focal(h, '0.37', '0.22');
+    html = await (await h.req(FILE)).text();
+    expect(html).toContain('name="x" value="0.37"');
+    expect(html).toContain('name="y" value="0.22"');
+    expect(html).toContain('left:37%;top:22%');
+    expect(html).toContain('x 0.3700 · y 0.2200');
+    expect(html).toContain('>Automatic</button>');
+  });
+
+  it('shows the picker through /library/raw without a resizer, and not for a retired file', async () => {
+    const h = harness({ mediaOrigin: null });
+    await h.put(KEY, jpeg('anna'));
+    const html = await (await h.req(FILE)).text();
+    expect(html).toContain('class="focal-pick"');
+    expect(html).toContain(`<img src="/library/raw?key=${encodeURIComponent(KEY)}" alt=""`);
+    await h.form('/library/file/retire', [
+      ['key', KEY],
+      ['retired', '1'],
+    ]);
+    expect(await (await h.req(FILE)).text()).not.toContain('class="focal-pick"');
   });
 });
 

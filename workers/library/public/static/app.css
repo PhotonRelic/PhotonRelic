@@ -566,3 +566,18 @@ a.facet.active .n { color: var(--pr-accent); }
 .markup-grid fieldset .n { font-family: var(--pr-font-mono); }
 .markup-grid input[type=text], .markup-grid select { margin: 0; padding: 0.25rem 0.5rem; }
 .markup-panel textarea { margin: 0; font-size: 0.72rem; line-height: 1.45; white-space: pre; overflow-x: auto; resize: vertical; }
+
+/* ---- Focal point ---- */
+.focal-block .focal-form { margin: 0; }
+.focal-pick { position: relative; display: block; line-height: 0; cursor: crosshair; border-radius: 6px; overflow: hidden; background: #222; }
+.focal-pick img { display: block; width: 100%; user-select: none; -webkit-user-drag: none; }
+/* the marker never takes the click, so the fractions always come from the image */
+.focal-mark { position: absolute; width: 26px; height: 26px; transform: translate(-50%, -50%); pointer-events: none; border: 2px solid var(--pr-accent); border-radius: 50%; box-shadow: var(--pr-glow-accent), inset 0 0 6px rgba(0, 255, 204, 0.5); }
+.focal-mark::before, .focal-mark::after { content: ""; position: absolute; background: var(--pr-accent); box-shadow: var(--pr-glow-accent); }
+.focal-mark::before { left: 50%; top: -10px; bottom: -10px; width: 1px; transform: translateX(-50%); }
+.focal-mark::after { top: 50%; left: -10px; right: -10px; height: 1px; transform: translateY(-50%); }
+.focal-readout { margin: 0.5rem 0 0.6rem; }
+.focal-readout small { font-family: var(--pr-font-mono); font-variant-numeric: tabular-nums; }
+.focal-value { text-align: left; }
+.focal-actions { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.focal-actions button { width: auto; margin: 0; }

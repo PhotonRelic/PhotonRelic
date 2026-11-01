@@ -1,17 +1,19 @@
 /**
  * The media library pages: the bucket-first browser with selection and the
- * bulk bar, one file (with its Replace and Delete), the upload page (with the
- * rclone procedure beside the drop zone), the bulk filing preview, the
- * duplicates view, the unfiled queue, the expiring view and the unused list.
+ * bulk bar, one file (with its focal point, Replace and Delete), the upload
+ * page (with the rclone procedure beside the drop zone), the bulk filing
+ * preview, the duplicates view, the unfiled queue, the expiring view and the
+ * unused list.
  */
 import type {
   Asset,
   DuplicateGroup,
+  Focal,
   SearchFacets,
   SearchFilters,
   SearchState,
 } from '../library.js';
-import { altFromPattern, EXPIRING_DAYS, RIGHTS_MAX, SEARCH_STATES } from '../library.js';
+import { altFromPattern, EXPIRING_DAYS, focalOf, RIGHTS_MAX, SEARCH_STATES } from '../library.js';
 import type { MarkupPanelModel } from '../markup.js';
 import {
   basenameOf,
@@ -874,6 +876,7 @@ export function FilePage({
   purge: boolean;
 }) {
   const filing = filingLabel(asset ?? undefined);
+  const focal = focalOf(asset);
   const ext = key.slice(key.lastIndexOf('.') + 1).toLowerCase();
   const cacheNote = purge
     ? 'Every copy the edge holds is purged at once; a browser that already has one may keep it for up to an hour.'
@@ -955,6 +958,12 @@ export function FilePage({
                   </td>
                 </tr>
               ) : null}
+              <tr>
+                <td>Focal point</td>
+                <td class="num focal-value">
+                  {focal ? `x ${focal.x} · y ${focal.y}` : 'automatic'}
+                </td>
+              </tr>
               {publicUrl ? (
                 <tr>
                   <td>URL</td>
@@ -1118,6 +1127,9 @@ export function FilePage({
             </details>
           )}
         </article>
+        {head && !asset?.retired ? (
+          <FocalBlock objectKey={key} focal={focal} src={preview(key, 1024)} purge={purge} />
+        ) : null}
       </div>
       {!head ? null : markup ? (
         <MarkupPanel model={markup} />
@@ -1130,6 +1142,92 @@ export function FilePage({
         </p>
       )}
     </>
+  );
+}
+
+/**
+ * Where a cover crop keeps its subject. The image is the control: a click
+ * puts the marker there, and the fractions of the rendered width and height
+ * go into two hidden inputs the Save posts. Automatic empties both and posts,
+ * which the handler reads as "clear". The stored point is drawn and the
+ * inputs filled from the server too, so the page is right before Alpine
+ * wakes.
+ */
+function FocalBlock({
+  objectKey: key,
+  focal,
+  src,
+  purge,
+}: {
+  objectKey: string;
+  focal: Focal | null;
+  src: string;
+  purge: boolean;
+}) {
+  const state = JSON.stringify({ x: focal?.x ?? 0.5, y: focal?.y ?? 0.5, set: focal !== null });
+  const pick =
+    'const r = $el.getBoundingClientRect();' +
+    ' x = Math.min(1, Math.max(0, ($event.clientX - r.left) / r.width));' +
+    ' y = Math.min(1, Math.max(0, ($event.clientY - r.top) / r.height));' +
+    ' set = true';
+  return (
+    <article class="focal-block">
+      <h4>Focal point</h4>
+      <p>
+        <small class="muted">
+          Click the part of the image a crop must keep: a face, a label, the product. Every{' '}
+          <code>?ar=</code> size is cut around it; plain widths are never cropped. Automatic lets
+          the resizer choose.{' '}
+          {purge
+            ? 'Cropped copies the edge holds are purged on save.'
+            : 'Cropped copies the edge holds refresh within a day.'}
+        </small>
+      </p>
+      <form method="post" action="/library/file/focal" class="focal-form" x-data={state}>
+        <input type="hidden" name="key" value={key} />
+        <input
+          type="hidden"
+          name="x"
+          value={focal ? String(focal.x) : ''}
+          x-bind:value="set ? x.toFixed(4) : ''"
+        />
+        <input
+          type="hidden"
+          name="y"
+          value={focal ? String(focal.y) : ''}
+          x-bind:value="set ? y.toFixed(4) : ''"
+        />
+        <div class="focal-pick" x-on:click={pick} title="Click to set the focal point">
+          <img src={src} alt="" draggable={false} />
+          <span
+            class="focal-mark"
+            aria-hidden="true"
+            x-show="set"
+            x-bind:style="`left:${(x * 100).toFixed(2)}%;top:${(y * 100).toFixed(2)}%`"
+            style={focal ? `left:${focal.x * 100}%;top:${focal.y * 100}%` : 'display:none'}
+          />
+        </div>
+        <p class="focal-readout">
+          <small class="muted" x-text="set ? `x ${x.toFixed(4)} · y ${y.toFixed(4)}` : 'automatic'">
+            {focal ? `x ${focal.x.toFixed(4)} · y ${focal.y.toFixed(4)}` : 'automatic'}
+          </small>
+        </p>
+        <div class="focal-actions">
+          <button type="submit" x-bind:disabled="!set" disabled={focal === null}>
+            Save
+          </button>
+          {focal ? (
+            <button
+              type="button"
+              class="outline"
+              x-on:click="set = false; $nextTick(() => $el.form.requestSubmit())"
+            >
+              Automatic
+            </button>
+          ) : null}
+        </div>
+      </form>
+    </article>
   );
 }
 
