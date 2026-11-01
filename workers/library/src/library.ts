@@ -1,9 +1,10 @@
 /**
  * The media library's metadata and logic. The bucket is the only record of
  * which files exist; `assets` holds what the library knows about a key
- * (subject, tags, default alt text, credit, hashes, source). A key without a
- * row is still listed, as unfiled. Nothing here deletes an object.
+ * (subject, tags, default alt text, credit, rights, hashes, source). A key
+ * without a row is still listed, as unfiled. Nothing here deletes an object.
  */
+import { auditStatement } from './audit.js';
 import { batchAll, type Db } from './db.js';
 import {
   basenameOf,
@@ -35,6 +36,11 @@ export interface AssetRow {
   tags: string;
   alt_default: string;
   credit: string | null;
+  /** Rights: free text, an http(s) URL, free text, and a date (YYYY-MM-DD); all optional. */
+  licence: string | null;
+  source_url: string | null;
+  restrictions: string | null;
+  expires_at: string | null;
   source: AssetSource;
   first_seen: string;
   uploaded_by: string | null;
@@ -216,6 +222,76 @@ export interface Filing {
   altPattern?: string | undefined;
   /** One literal default alt text (the file page); wins over the pattern. */
   altDefault?: string | undefined;
+  /** Rights, already validated (see `checkRights`); '' clears each, undefined leaves it. */
+  licence?: string | undefined;
+  sourceUrl?: string | undefined;
+  restrictions?: string | undefined;
+  expiresAt?: string | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Rights: licence, source, restrictions and expiry
+// ---------------------------------------------------------------------------
+
+export interface Rights {
+  licence: string;
+  sourceUrl: string;
+  restrictions: string;
+  expiresAt: string;
+}
+
+/** Bounds on the free-text fields, so a pasted contract does not become a row. */
+export const RIGHTS_MAX = { licence: 200, sourceUrl: 2048, restrictions: 2000 } as const;
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** A calendar date as YYYY-MM-DD: the shape, and a day that exists. */
+export function isIsoDate(s: string): boolean {
+  if (!ISO_DATE.test(s)) return false;
+  const d = new Date(`${s}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+}
+
+/** The UTC calendar date of an instant, the form `expires_at` is compared against. */
+export const isoDate = (d: Date): string => d.toISOString().slice(0, 10);
+
+export function plusDays(date: string, days: number): string {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return isoDate(d);
+}
+
+/**
+ * Validates what a form sent for the rights fields. Each may be blank; a
+ * source URL must be http(s), an expiry a real date, and the texts bounded.
+ * The first problem is returned as a message for the flash.
+ */
+export function checkRights(
+  raw: Partial<Rights>,
+): { ok: true; rights: Rights } | { ok: false; error: string } {
+  const licence = (raw.licence ?? '').trim();
+  const sourceUrl = (raw.sourceUrl ?? '').trim();
+  const restrictions = (raw.restrictions ?? '').trim();
+  const expiresAt = (raw.expiresAt ?? '').trim();
+  if (licence.length > RIGHTS_MAX.licence)
+    return { ok: false, error: `Licence: at most ${RIGHTS_MAX.licence} characters.` };
+  if (sourceUrl.length > RIGHTS_MAX.sourceUrl)
+    return { ok: false, error: `Source URL: at most ${RIGHTS_MAX.sourceUrl} characters.` };
+  if (sourceUrl !== '') {
+    let protocol = '';
+    try {
+      protocol = new URL(sourceUrl).protocol;
+    } catch {
+      // not a URL at all; refused below
+    }
+    if (protocol !== 'http:' && protocol !== 'https:')
+      return { ok: false, error: 'Source URL must start with http:// or https://.' };
+  }
+  if (restrictions.length > RIGHTS_MAX.restrictions)
+    return { ok: false, error: `Restrictions: at most ${RIGHTS_MAX.restrictions} characters.` };
+  if (expiresAt !== '' && !isIsoDate(expiresAt))
+    return { ok: false, error: 'Expires: a date as YYYY-MM-DD.' };
+  return { ok: true, rights: { licence, sourceUrl, restrictions, expiresAt } };
 }
 
 export const parseTags = (text: string): string[] => [
@@ -255,15 +331,21 @@ export async function fileAssets(
           ? altFromPattern(layout, filing.altPattern, key)
           : (current?.alt_default ?? '');
     const filedNow = subject !== null && (current?.subject ?? null) === null;
+    // Each rights field: undefined leaves what is there, '' clears it.
+    const keep = (next: string | undefined, had: string | null | undefined) =>
+      next === undefined ? (had ?? null) : next || null;
     statements.push(
       db
         .prepare(
-          `INSERT INTO assets (key, source, first_seen, subject, tags, alt_default, credit, filed_by, filed_at)
-           VALUES (?1, 'other', ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+          `INSERT INTO assets (key, source, first_seen, subject, tags, alt_default, credit, filed_by, filed_at,
+             licence, source_url, restrictions, expires_at)
+           VALUES (?1, 'other', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?10, ?11, ?12, ?13)
            ON CONFLICT(key) DO UPDATE SET subject = excluded.subject, tags = excluded.tags, alt_default = excluded.alt_default,
              credit = excluded.credit,
              filed_by = CASE WHEN ?9 = 1 THEN excluded.filed_by ELSE assets.filed_by END,
-             filed_at = CASE WHEN ?9 = 1 THEN excluded.filed_at ELSE assets.filed_at END`,
+             filed_at = CASE WHEN ?9 = 1 THEN excluded.filed_at ELSE assets.filed_at END,
+             licence = excluded.licence, source_url = excluded.source_url,
+             restrictions = excluded.restrictions, expires_at = excluded.expires_at`,
         )
         .bind(
           key,
@@ -275,6 +357,10 @@ export async function fileAssets(
           subject !== null ? actor : null,
           subject !== null ? now.toISOString() : null,
           filedNow ? 1 : 0,
+          keep(filing.licence, current?.licence),
+          keep(filing.sourceUrl, current?.source_url),
+          keep(filing.restrictions, current?.restrictions),
+          keep(filing.expiresAt, current?.expires_at),
         ),
     );
   }
@@ -505,6 +591,110 @@ export async function searchFacets(db: Db, filters: SearchFilters): Promise<Sear
       .all<Facet>(),
   ]);
   return { subjects: subjects.results, tags: tags.results };
+}
+
+// ---------------------------------------------------------------------------
+// Expiry: what runs out soon, and retiring what has
+// ---------------------------------------------------------------------------
+
+/** How far ahead the Expiring view and its badge look. */
+export const EXPIRING_DAYS = 30;
+
+/**
+ * Files not yet retired whose rights run out within `days` of `today`, or
+ * already have: soonest first, so the expired ones lead. A file expiring
+ * today is still in date (expiry is `expires_at < today`).
+ */
+export async function listExpiring(
+  db: Db,
+  today: string,
+  days = EXPIRING_DAYS,
+  limit = 500,
+): Promise<Asset[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT * FROM assets WHERE retired = 0 AND expires_at IS NOT NULL AND expires_at <= ?1
+       ORDER BY expires_at, key LIMIT ?2`,
+    )
+    .bind(plusDays(today, days), limit)
+    .all<AssetRow>();
+  return results.map(fromRow);
+}
+
+export async function countExpiring(db: Db, today: string, days = EXPIRING_DAYS): Promise<number> {
+  const r = await db
+    .prepare(
+      'SELECT COUNT(*) AS n FROM assets WHERE retired = 0 AND expires_at IS NOT NULL AND expires_at <= ?1',
+    )
+    .bind(plusDays(today, days))
+    .first<{ n: number }>();
+  return r?.n ?? 0;
+}
+
+/** Who the audit log names for the expiry rule's own writes. */
+export const EXPIRY_ACTOR = 'system:expiry';
+
+export interface ExpiryReport {
+  today: string;
+  /** The keys retired by this run, soonest expiry first. */
+  retired: string[];
+}
+
+/**
+ * Retires every file whose expiry date has passed (`expires_at < today`),
+ * noting `Expired <date>` on each, with one audit row per file and one for
+ * the run. A file's change and its audit row sit side by side in the same
+ * batch, so neither lands without the other.
+ * Only rows not yet retired are touched, so a second run on the same day
+ * retires nothing and only adds its own summary row: the daily row is how an
+ * operator can see the cron is alive. `requestedBy` names the person behind
+ * a manual run; the rule itself is the actor.
+ */
+export async function retireExpired(
+  db: Db,
+  today: string,
+  requestedBy?: string,
+): Promise<ExpiryReport> {
+  if (!isIsoDate(today)) throw new Error(`Not a date: ${today}`);
+  const { results } = await db
+    .prepare(
+      `SELECT key, expires_at FROM assets WHERE retired = 0 AND expires_at IS NOT NULL AND expires_at < ?1
+       ORDER BY expires_at, key`,
+    )
+    .bind(today)
+    .all<{ key: string; expires_at: string }>();
+  const statements = results.flatMap((r) => {
+    const note = `Expired ${r.expires_at}`;
+    return [
+      // The guard repeats the selection: a person retiring the file between
+      // the read and the write keeps their own note.
+      db
+        .prepare(
+          `UPDATE assets SET retired = 1, retired_note = ?2
+           WHERE key = ?1 AND retired = 0 AND expires_at < ?3`,
+        )
+        .bind(r.key, note, today),
+      auditStatement(db, {
+        actor: EXPIRY_ACTOR,
+        action: 'library.retired',
+        detail: { key: r.key, note, expires_at: r.expires_at },
+      }),
+    ];
+  });
+  statements.push(
+    auditStatement(db, {
+      actor: EXPIRY_ACTOR,
+      action: 'library.expiry_run',
+      detail: {
+        today,
+        count: results.length,
+        keys: results.map((r) => r.key),
+        ...(requestedBy ? { requested_by: requestedBy } : {}),
+      },
+    }),
+  );
+  await batchAll(db, statements);
+  return { today, retired: results.map((r) => r.key) };
 }
 
 // ---------------------------------------------------------------------------

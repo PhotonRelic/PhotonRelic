@@ -1,9 +1,9 @@
 /**
  * The media library's pages and writes, mounted under /library: the
  * bucket-first browser, one file, bulk filing, the upload page with its
- * precheck and streamed PUT, duplicates, the unfiled queue, Rescan, and the
- * one door that removes an object: the file page's Delete, confirmed by the
- * person pressing it.
+ * precheck and streamed PUT, duplicates, the unfiled queue, the expiring
+ * view with its run-now control, Rescan, and the one door that removes an
+ * object: the file page's Delete, confirmed by the person pressing it.
  */
 import { Hono } from 'hono';
 import { type LibraryContext, page } from '../app.jsx';
@@ -11,14 +11,19 @@ import { logAction } from '../audit.js';
 import { type AppDeps, previewUrl, publicUrl } from '../deps.js';
 import { redirectWith } from '../flash.js';
 import {
+  type Asset,
+  checkRights,
   countDuplicateKeys,
+  countExpiring,
   countUnfiled,
   fileAssets,
   forgetAsset,
   getAsset,
   getAssets,
   IMAGE_KEY,
+  isoDate,
   listDuplicates,
+  listExpiring,
   listUnfiled,
   type PrecheckEntry,
   parseTags,
@@ -26,6 +31,7 @@ import {
   recordUpload,
   rescan,
   retireAsset,
+  retireExpired,
   SEARCH_STATES,
   type SearchFilters,
   searchAssets,
@@ -46,6 +52,7 @@ import {
   type BulkPreview,
   BulkPreviewPage,
   DuplicatesPage,
+  ExpiringPage,
   FilePage,
   type LibraryStats,
   type Preview,
@@ -81,6 +88,29 @@ export function libraryRoutes(deps: AppDeps) {
   const folderOf = (key: string) =>
     `/library?prefix=${encodeURIComponent(key.slice(0, key.lastIndexOf('/') + 1))}`;
   const cleanSubject = (s: string) => s.trim().replace(/^\/+|\/+$/g, '');
+  /** The calendar date expiry is judged against, from the deps' clock. */
+  const today = () => isoDate(deps.now());
+
+  /** What a save changed, by field, for the audit row. */
+  const EDITABLE = [
+    'subject',
+    'tags',
+    'alt_default',
+    'credit',
+    'licence',
+    'source_url',
+    'restrictions',
+    'expires_at',
+  ] as const;
+  function changedFields(before: Asset | null, after: Asset | null): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    for (const f of EDITABLE) {
+      const was = before?.[f] ?? null;
+      const now = after?.[f] ?? null;
+      if (JSON.stringify(was) !== JSON.stringify(now)) out[f] = now;
+    }
+    return out;
+  }
 
   /** A prefix the library lists: '' (the roots) or under one of the roots, no traversal. */
   function libraryPrefix(requested: string | undefined): string | null {
@@ -100,11 +130,12 @@ export function libraryRoutes(deps: AppDeps) {
   }
 
   async function stats(): Promise<LibraryStats> {
-    const [unfiled, duplicateKeys] = await Promise.all([
+    const [unfiled, duplicateKeys, expiring] = await Promise.all([
       countUnfiled(deps.db),
       countDuplicateKeys(deps.db),
+      countExpiring(deps.db, today()),
     ]);
-    return { unfiled, duplicateKeys };
+    return { unfiled, duplicateKeys, expiring };
   }
 
   // Browse ----------------------------------------------------------------
@@ -216,6 +247,7 @@ export function libraryRoutes(deps: AppDeps) {
         preview={preview}
         publicUrl={publicUrl(deps, key)}
         hasStore={Boolean(deps.media)}
+        today={today()}
       />,
     );
   });
@@ -226,6 +258,13 @@ export function libraryRoutes(deps: AppDeps) {
     if (!isLibraryKey(layout, key) || !IMAGE_KEY.test(key))
       return redirectWith(c, '/library', 'error', 'No such key.');
     const tags = parseTags(str(f, 'tags'));
+    const rights = checkRights({
+      licence: str(f, 'licence'),
+      sourceUrl: str(f, 'source_url'),
+      restrictions: str(f, 'restrictions'),
+      expiresAt: str(f, 'expires_at'),
+    });
+    if (!rights.ok) return redirectWith(c, fileBack(key), 'error', `Not saved. ${rights.error}`);
     const current = await getAsset(deps.db, key);
     await fileAssets(
       deps.db,
@@ -237,11 +276,16 @@ export function libraryRoutes(deps: AppDeps) {
         removeTags: (current?.tags ?? []).filter((t) => !tags.includes(t)),
         credit: str(f, 'credit').trim(),
         altDefault: str(f, 'alt_default').trim(),
+        ...rights.rights,
       },
       actor(c),
       deps.now(),
     );
-    await logAction(deps.db, { actor: actor(c), action: 'library.filed', detail: { keys: [key] } });
+    await logAction(deps.db, {
+      actor: actor(c),
+      action: 'library.filed',
+      detail: { keys: [key], changed: changedFields(current, await getAsset(deps.db, key)) },
+    });
     return redirectWith(c, fileBack(key), 'success', 'Saved.');
   });
 
@@ -258,9 +302,10 @@ export function libraryRoutes(deps: AppDeps) {
       action: retired ? 'library.retired' : 'library.unretired',
       detail: { key, note },
     });
+    // The Expiring view retires from its rows and wants to stay there.
     return redirectWith(
       c,
-      fileBack(key),
+      backOf(str(f, 'back', fileBack(key))),
       'success',
       retired ? 'Retired. The object stays in the bucket.' : 'Back in use.',
     );
@@ -316,9 +361,17 @@ export function libraryRoutes(deps: AppDeps) {
       removeTags: parseTags(str(f, 'remove_tags')),
       credit: opt('credit'),
       altPattern: opt('alt_pattern'),
+      licence: opt('licence'),
+      expiresAt: opt('expires_at'),
       back: backOf(str(f, 'back', '/library')),
     };
   }
+
+  /** The bulk bar's rights fields, checked the same way as the file page's; a message when one is off. */
+  const bulkRightsError = (p: BulkPreview): string | null => {
+    const r = checkRights({ licence: p.licence ?? '', expiresAt: p.expiresAt ?? '' });
+    return r.ok ? null : r.error;
+  };
 
   app.post('/bulk', async (c) => {
     const preview = previewFrom(await c.req.parseBody({ all: true }));
@@ -329,14 +382,21 @@ export function libraryRoutes(deps: AppDeps) {
       preview.addTags.length === 0 &&
       preview.removeTags.length === 0 &&
       preview.credit === undefined &&
-      preview.altPattern === undefined
+      preview.altPattern === undefined &&
+      preview.licence === undefined &&
+      preview.expiresAt === undefined
     )
       return redirectWith(c, preview.back, 'warning', 'Nothing to change: fill in the bar first.');
+    const problem = bulkRightsError(preview);
+    if (problem) return redirectWith(c, preview.back, 'error', problem);
     return page(c, deps, 'File images', <BulkPreviewPage preview={preview} layout={layout} />);
   });
 
   app.post('/bulk/apply', async (c) => {
     const preview = previewFrom(await c.req.parseBody({ all: true }));
+    // The preview checked these, but the apply is its own request.
+    const problem = bulkRightsError(preview);
+    if (problem) return redirectWith(c, preview.back, 'error', problem);
     const n = await fileAssets(
       deps.db,
       layout,
@@ -347,6 +407,8 @@ export function libraryRoutes(deps: AppDeps) {
         removeTags: preview.removeTags,
         credit: preview.credit,
         altPattern: preview.altPattern,
+        licence: preview.licence,
+        expiresAt: preview.expiresAt,
       },
       actor(c),
       deps.now(),
@@ -359,6 +421,9 @@ export function libraryRoutes(deps: AppDeps) {
         subject: preview.subject ?? null,
         addTags: preview.addTags,
         removeTags: preview.removeTags,
+        ...(preview.credit !== undefined ? { credit: preview.credit } : {}),
+        ...(preview.licence !== undefined ? { licence: preview.licence } : {}),
+        ...(preview.expiresAt !== undefined ? { expires_at: preview.expiresAt } : {}),
       },
     });
     return redirectWith(c, preview.back, 'success', `Filed ${n} file${n === 1 ? '' : 's'}.`);
@@ -371,6 +436,31 @@ export function libraryRoutes(deps: AppDeps) {
       rows.map((a) => ({ key: a.key, size: a.bytes ?? 0, uploaded: a.first_seen, etag: a.etag })),
     );
     return page(c, deps, 'Unfiled', <UnfiledPage tiles={tiles} preview={preview} total={total} />);
+  });
+
+  // Expiring ----------------------------------------------------------------
+  app.get('/expiring', async (c) => {
+    const day = today();
+    return page(
+      c,
+      deps,
+      'Expiring',
+      <ExpiringPage assets={await listExpiring(deps.db, day)} today={day} preview={preview} />,
+    );
+  });
+
+  /** The daily expiry run, now: what the cron would do at its next tick. */
+  app.post('/expiring/run', async (c) => {
+    const r = await retireExpired(deps.db, today(), actor(c));
+    const n = r.retired.length;
+    return redirectWith(
+      c,
+      '/library/expiring',
+      'success',
+      n === 0
+        ? `Expiry run: nothing had expired before ${r.today}.`
+        : `Expiry run: retired ${n} file${n === 1 ? '' : 's'} expired before ${r.today}.`,
+    );
   });
 
   // Rescan ------------------------------------------------------------------

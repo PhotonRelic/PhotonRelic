@@ -22,6 +22,13 @@ SERVED_PREFIXES = "media/"
 binding = "MEDIA"
 bucket_name = "photonrelic-example-media"
 
+# Optional: the library's database (library.toml), read only, so a key whose
+# rights have expired answers 410 Gone. See workers/resizer/wrangler.toml.
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "photonrelic-example"
+# database_id = "REPLACE_D1_DATABASE_ID"
+
 # Without Images enabled on the account, objects are served as stored with
 # `x-media-transform: unavailable`.
 [images]

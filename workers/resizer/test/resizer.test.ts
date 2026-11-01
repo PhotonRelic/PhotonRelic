@@ -8,11 +8,32 @@ import {
   hostMatches,
   parseAllowedOrigins,
 } from '../src/embed.js';
+import { type ExpiryDb, isExpired } from '../src/expiry.js';
 import { type ImageTransformer, TransformFailed, type TransformOptions } from '../src/images.js';
 import { isServableKey, MemoryMediaSource, parsePrefixes } from '../src/source.js';
 
 /** The first bytes of a PNG, enough to be a distinct stored object. */
 const png = () => new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3]).buffer as ArrayBuffer;
+
+/** The library's `assets` table, reduced to key and expiry, answering the one query the resizer makes. */
+class FakeDb implements ExpiryDb {
+  readonly expiries = new Map<string, string | null>();
+  queries = 0;
+  failing = false;
+  prepare(_sql: string) {
+    return {
+      bind: (...values: unknown[]) => ({
+        first: async <T>(): Promise<T | null> => {
+          this.queries += 1;
+          if (this.failing) throw new Error('D1 is away');
+          const [key, today] = values as [string, string];
+          const expiresAt = this.expiries.get(key);
+          return expiresAt && expiresAt < today ? ({ gone: 1 } as T) : null;
+        },
+      }),
+    };
+  }
+}
 
 class FakeImages implements ImageTransformer {
   calls: TransformOptions[] = [];
@@ -37,6 +58,7 @@ function harness(
     prefixes?: string[];
     menu?: typeof DEFAULT_MENU;
     embed?: EmbedPolicy | null;
+    db?: FakeDb;
   } = {},
 ) {
   const source = new MemoryMediaSource();
@@ -51,6 +73,7 @@ function harness(
     prefixes: opts.prefixes ?? ['media/'],
     menu: opts.menu ?? DEFAULT_MENU,
     embed: opts.embed ?? null,
+    db: opts.db ?? null,
   });
   const get = (path: string, headers: Record<string, string> = {}) =>
     app.request(`https://img.example.com${path}`, { headers });
@@ -247,6 +270,53 @@ describe('embedding allowlist', () => {
       allowEmptyReferer: true,
     });
     expect(embedPolicyFromVars('example.com', 'FALSE')?.allowEmptyReferer).toBe(false);
+  });
+});
+
+describe('rights expiry', () => {
+  const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+
+  it('answers 410 EXPIRED for an expired key, as stored or resized, before any transform', async () => {
+    const db = new FakeDb();
+    db.expiries.set('media/workshop/bench.jpg', yesterday);
+    const h = harness({ db });
+    const stored = await h.get('/media/workshop/bench.jpg');
+    expect(stored.status).toBe(410);
+    expect(((await stored.json()) as { error: { code: string } }).error.code).toBe('EXPIRED');
+    expect(stored.headers.get('cache-control')).toBe('no-store');
+    const resized = await h.get('/media/workshop/bench.jpg?w=320&f=webp');
+    expect(resized.status).toBe(410);
+    expect(h.images.calls).toHaveLength(0);
+  });
+
+  it('serves a key that expires today or later, or has no row', async () => {
+    const db = new FakeDb();
+    db.expiries.set('media/workshop/bench.jpg', tomorrow);
+    db.expiries.set('media/products/Chair-01ABC.PNG', null);
+    const h = harness({ db });
+    expect((await h.get('/media/workshop/bench.jpg')).status).toBe(200);
+    expect((await h.get('/media/workshop/bench.jpg?w=320')).status).toBe(200);
+    expect((await h.get('/media/products/Chair-01ABC.PNG')).status).toBe(200);
+    expect((await h.get('/media/missing.jpg')).status).toBe(404);
+    expect(db.queries).toBe(4);
+  });
+
+  it('is not consulted without the binding, and fails open when the database errors', async () => {
+    const h = harness();
+    expect((await h.get('/media/workshop/bench.jpg')).status).toBe(200);
+    const db = new FakeDb();
+    db.expiries.set('media/workshop/bench.jpg', yesterday);
+    db.failing = true;
+    expect((await harness({ db }).get('/media/workshop/bench.jpg')).status).toBe(200);
+  });
+
+  it('compares the date as text against the day given', async () => {
+    const db = new FakeDb();
+    db.expiries.set('media/a.jpg', '2026-10-29');
+    expect(await isExpired(db, 'media/a.jpg', '2026-10-30')).toBe(true);
+    expect(await isExpired(db, 'media/a.jpg', '2026-10-29')).toBe(false);
+    expect(await isExpired(db, 'media/b.jpg', '2026-10-30')).toBe(false);
   });
 });
 
