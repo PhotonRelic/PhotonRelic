@@ -521,3 +521,23 @@ nav.tabs a:hover { color: var(--pr-highlight); }
 .st-failed { color: var(--pr-danger-text); }
 .dup-group { margin-bottom: 1.5rem; padding: 0.8rem 1rem; border: 1px solid var(--pr-border); border-radius: 10px; background: var(--pr-glass); }
 .dup-group label { font-size: 0.82rem; }
+
+/* ---- Search ---- */
+/* The nav box is a quiet entry point, sized to a few words; the results page has the full bar. */
+.nav-search { display: inline; margin: 0; }
+.topnav .nav-search input[type=search] { width: 11rem; margin: 0; padding: 0.3rem 0.6rem; height: auto; font-size: 0.78rem; background: rgba(18, 7, 31, 0.6); border-color: var(--pr-border); }
+.topnav .nav-search input[type=search]:focus { width: 16rem; transition: width 0.15s; }
+.search-bar [role=button] { margin: 0; }
+/* facet rows: filter values as link chips; the chosen one is lit and links to its own removal */
+.facet-row { display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem; margin: 0 0 0.6rem; }
+.facet-label { font: 600 10px var(--pr-font-mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--pr-text-dim); min-width: 4.5rem; }
+a.facet { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.2rem 0.55rem; border: 1px solid var(--pr-border); border-radius: 4px; font: 500 11px var(--pr-font-mono); letter-spacing: 0.04em; color: var(--pr-text-soft); text-decoration: none; transition: border-color 0.15s, box-shadow 0.15s, color 0.15s; }
+a.facet:hover { border-color: var(--pr-highlight); color: var(--pr-highlight); box-shadow: 0 0 10px rgba(241, 129, 247, 0.25); }
+a.facet .n { color: var(--pr-text-dim); font-variant-numeric: tabular-nums; }
+a.facet.active { border-color: rgba(0, 255, 204, 0.6); background: rgba(0, 255, 204, 0.1); color: var(--pr-accent); box-shadow: var(--pr-glow-accent); }
+a.facet.active .n { color: var(--pr-accent); }
+.facet-x { font-weight: 600; }
+.search-count { margin: 0.4rem 0 0.8rem; font-size: 0.85rem; color: var(--pr-text-soft); }
+.search-count .n, .pager .n { font-family: var(--pr-font-mono); font-weight: 600; font-variant-numeric: tabular-nums; color: var(--pr-accent); }
+.pager { display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; }
+.pager [role=button] { width: auto; margin: 0; }

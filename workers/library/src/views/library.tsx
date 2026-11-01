@@ -4,8 +4,14 @@
  * drop zone), the bulk filing preview, the duplicates view and the unfiled
  * queue.
  */
-import type { Asset, DuplicateGroup } from '../library.js';
-import { altFromPattern } from '../library.js';
+import type {
+  Asset,
+  DuplicateGroup,
+  SearchFacets,
+  SearchFilters,
+  SearchState,
+} from '../library.js';
+import { altFromPattern, SEARCH_STATES } from '../library.js';
 import {
   basenameOf,
   type MediaLayout,
@@ -18,11 +24,12 @@ import { kb, when } from './layout.js';
 /** How a page builds an image URL for a key; the handler binds it to the deps. */
 export type Preview = (key: string, width?: number) => string;
 
-export type LibraryTab = 'library' | 'upload' | 'unfiled' | 'duplicates';
+export type LibraryTab = 'library' | 'search' | 'upload' | 'unfiled' | 'duplicates';
 
 export function Tabs({ active }: { active: LibraryTab }) {
   const items: [LibraryTab, string, string][] = [
     ['library', '/library', 'Library'],
+    ['search', '/library/search', 'Search'],
     ['upload', '/library/upload', 'Upload'],
     ['unfiled', '/library/unfiled', 'Unfiled'],
     ['duplicates', '/library/duplicates', 'Duplicates'],
@@ -205,17 +212,190 @@ function SelectionForm({
   back,
   tiles,
   preview,
+  filter = true,
 }: {
   back: string;
   tiles: Tile[];
   preview: Preview;
+  /** The in-page filter box; off where the page is itself a search. */
+  filter?: boolean;
 }) {
   return (
     <form method="post" action="/library/bulk" x-data="{ q: '' }" class="selection-form">
-      <input type="search" placeholder="Filter by path, tag or alt text…" x-model="q" />
+      {filter ? (
+        <input type="search" placeholder="Filter by path, tag or alt text…" x-model="q" />
+      ) : null}
       <BulkBar back={back} />
       <TileGrid tiles={tiles} preview={preview} />
     </form>
+  );
+}
+
+/** The results page for a search; page 1 and the defaults are left out of the URL. */
+export function searchHref(f: SearchFilters, page = 1): string {
+  const params = new URLSearchParams();
+  if (f.q) params.set('q', f.q);
+  if (f.subject !== null) params.set('subject', f.subject);
+  if (f.tag !== null) params.set('tag', f.tag);
+  if (f.state !== 'all') params.set('state', f.state);
+  if (page > 1) params.set('page', String(page));
+  const qs = params.toString();
+  return qs ? `/library/search?${qs}` : '/library/search';
+}
+
+/** One row of filter values as links: the chosen one links to its own removal. */
+function FacetRow({
+  label,
+  items,
+  current,
+  hrefFor,
+}: {
+  label: string;
+  items: { value: string; n?: number }[];
+  current: string | null;
+  hrefFor: (value: string | null) => string;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <p class="facet-row">
+      <span class="facet-label">{label}</span>
+      {items.map(({ value, n }) => {
+        const chosen = value === current;
+        return (
+          <a
+            href={hrefFor(chosen ? null : value)}
+            class={`facet${chosen ? ' active' : ''}`}
+            title={chosen ? `Stop filtering by ${value}` : `Only ${value}`}
+          >
+            {value}
+            {n === undefined ? null : <span class="n">{n}</span>}
+            {chosen ? <span class="facet-x">×</span> : null}
+          </a>
+        );
+      })}
+    </p>
+  );
+}
+
+export function SearchPage({
+  filters,
+  page,
+  pageSize,
+  total,
+  tiles,
+  facets,
+  preview,
+}: {
+  filters: SearchFilters;
+  page: number;
+  pageSize: number;
+  total: number;
+  tiles: Tile[];
+  facets: SearchFacets;
+  preview: Preview;
+}) {
+  const self = searchHref(filters, page);
+  const narrowed =
+    filters.q !== '' || filters.subject !== null || filters.tag !== null || filters.state !== 'all';
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  const first = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const last = Math.min(total, page * pageSize);
+  const states: { value: SearchState }[] = SEARCH_STATES.map((value) => ({ value }));
+  return (
+    <>
+      <Tabs active="search" />
+      <PageHead title="Search">
+        <RescanButton />
+      </PageHead>
+      <p>
+        <small class="muted">
+          Searches what the library knows about each file: its path, subject, tags, default alt text
+          and credit. Only files the library has seen are found, so a file put in the bucket some
+          other way appears here after a Rescan has noted it. Select tiles to file the results in
+          bulk, as in the Library.
+        </small>
+      </p>
+      <form method="get" action="/library/search" class="filter-bar search-bar">
+        <input
+          type="search"
+          name="q"
+          value={filters.q}
+          placeholder="Words from the path, tags, alt text or credit…"
+          aria-label="Search the library"
+          autofocus
+        />
+        {filters.subject !== null ? (
+          <input type="hidden" name="subject" value={filters.subject} />
+        ) : null}
+        {filters.tag !== null ? <input type="hidden" name="tag" value={filters.tag} /> : null}
+        {filters.state !== 'all' ? (
+          <input type="hidden" name="state" value={filters.state} />
+        ) : null}
+        <button type="submit" class="secondary slim">
+          Search
+        </button>
+        {narrowed ? (
+          <a href="/library/search" role="button" class="outline slim">
+            Clear
+          </a>
+        ) : null}
+      </form>
+      <FacetRow
+        label="State"
+        items={states}
+        current={filters.state}
+        hrefFor={(v) => searchHref({ ...filters, state: (v as SearchState | null) ?? 'all' })}
+      />
+      <FacetRow
+        label="Subject"
+        items={facets.subjects}
+        current={filters.subject}
+        hrefFor={(v) => searchHref({ ...filters, subject: v })}
+      />
+      <FacetRow
+        label="Tags"
+        items={facets.tags}
+        current={filters.tag}
+        hrefFor={(v) => searchHref({ ...filters, tag: v })}
+      />
+      <p class="search-count">
+        <span class="n">{total}</span> {total === 1 ? 'file' : 'files'}{' '}
+        {!narrowed ? 'known to the library' : total === 1 ? 'matches' : 'match'}
+        {total > pageSize ? (
+          <>
+            , showing <span class="n">{first}</span>–<span class="n">{last}</span>
+          </>
+        ) : null}
+      </p>
+      {tiles.length ? (
+        <SelectionForm back={self} tiles={tiles} preview={preview} filter={false} />
+      ) : (
+        <p>
+          <small class="muted">
+            {narrowed
+              ? 'Nothing matches. Try fewer words, clear a filter, or Rescan if the file was added to the bucket outside the library.'
+              : 'The library has not seen any files yet. Upload a shoot or Rescan the bucket.'}
+          </small>
+        </p>
+      )}
+      {pages > 1 ? (
+        <p class="pager">
+          {page > 1 ? (
+            <a href={searchHref(filters, page - 1)} role="button" class="outline slim">
+              Previous
+            </a>
+          ) : null}
+          <span class="muted">
+            page <span class="n">{page}</span> of <span class="n">{pages}</span>
+          </span>
+          {page < pages ? (
+            <a href={searchHref(filters, page + 1)} role="button" class="outline slim">
+              Next
+            </a>
+          ) : null}
+        </p>
+      ) : null}
+    </>
   );
 }
 
