@@ -61,20 +61,37 @@ Locally, Access is skipped: every request is treated as `DEV_IDENTITY` from `.de
 
 ### Deploy
 
-1. Create the bucket and the database:
-   ```sh
-   npx wrangler r2 bucket create photonrelic-media
-   npx wrangler d1 create photonrelic       # put the id in workers/library/wrangler.toml
-   ```
-2. **Resizer:** in `workers/resizer/wrangler.toml`, set a route (its own hostname such as `img.example.com`, or a path such as `www.example.com/media/*`), then run `pnpm --filter @photonrelic/resizer deploy`.
-3. **Library:** in Cloudflare Zero Trust, create a self-hosted Access application for the library's hostname. In `workers/library/wrangler.toml`, set the route, `ENVIRONMENT = "production"`, `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` (the application's Audience tag) and `MEDIA_ORIGIN` (the resizer's origin). Then run:
-   ```sh
-   pnpm --filter @photonrelic/library migrate:remote
-   pnpm --filter @photonrelic/library deploy
-   ```
-   Outside local development the library refuses to start without `ACCESS_AUD`.
+A deployment is a directory holding a `library.toml` and a `resizer.toml` (either one is optional) plus two
+scripts that read them. `deploy/example/` is the template; everything under `deploy/` except the example is
+ignored by git, because the ids and hostnames in it belong to one account. For a team, put the directory in
+a private repo with PhotonRelic as a submodule instead, and point `main`, `assets.directory` and
+`migrations_dir` at the submodule.
 
-Keep the library's `LIBRARY_PREFIXES` and the resizer's `SERVED_PREFIXES` in step, so every file the library lists can also be previewed.
+1. Copy the template and edit it: Worker names, the two hostnames (the library's hostname is put behind
+   Access; the resizer's is public), the bucket and database names, and `MEDIA_ORIGIN`.
+   ```sh
+   cp -r deploy/example deploy/production
+   ```
+2. Put credentials in `.env` (see `.env.example`): a Cloudflare API token with Workers Scripts, Workers R2
+   Storage, D1, Access: Apps and Policies, and Access: Organizations, Identity Providers, and Groups
+   (account scope) plus Workers Routes and DNS (zone scope); the account id; and the email domains the
+   library should let in. Enable R2 in the dashboard once, and Zero Trust if the account has none (the
+   script can create the organisation when `ACCESS_TEAM_NAME` is set and Access has been enabled).
+3. Provision. This creates the Access application (allowing the email domains, One-time PIN sign-in), the
+   bucket and the database, and writes the team domain, Audience tag and database id into `library.toml`.
+   It is idempotent; re-run it after changing the email domains and the policy is updated.
+   ```sh
+   sh scripts/provision.sh deploy/production
+   ```
+4. Deploy: migrations, then the resizer, then the library. `--dry-run` builds both Workers without
+   credentials.
+   ```sh
+   sh scripts/deploy.sh deploy/production
+   ```
+
+The library refuses to start without `ACCESS_AUD`, so a deployment that skipped provisioning fails closed.
+Keep the library's `LIBRARY_PREFIXES` and the resizer's `SERVED_PREFIXES` in step, so every file the library
+lists can also be previewed.
 
 ### Configuration
 

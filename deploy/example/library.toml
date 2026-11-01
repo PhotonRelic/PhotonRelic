@@ -1,0 +1,43 @@
+# The library Worker for one deployment. Copy this directory to deploy/<name>
+# (ignored by git) or into a private repo, and change the names, the route
+# and the resizer origin. The REPLACE_ values are filled in by
+# scripts/provision.sh. Nothing here is secret.
+name = "photonrelic-example"
+# Relative to this file. From a private repo with PhotonRelic as a submodule
+# at photonrelic/, this is "../../photonrelic/workers/library/src/index.tsx".
+main = "../../workers/library/src/index.tsx"
+compatibility_date = "2026-09-01"
+# No workers.dev address or preview URLs: those would sit outside Access.
+workers_dev = false
+preview_urls = false
+routes = [{ pattern = "media-admin.example.com", custom_domain = true }]
+
+[assets]
+directory = "../../workers/library/public"
+binding = "ASSETS"
+
+[observability]
+enabled = true
+
+[vars]
+# Anything but "production" is shown as a tag in the library's header.
+ENVIRONMENT = "production"
+# The Zero Trust team domain, e.g. "team.cloudflareaccess.com".
+ACCESS_TEAM_DOMAIN = "REPLACE_ACCESS_TEAM_DOMAIN"
+# The Access application's Audience tag. The Worker refuses to start without
+# it, so a half-provisioned deployment fails closed.
+ACCESS_AUD = "REPLACE_ACCESS_AUD"
+# The resizer's public origin (resizer.toml).
+MEDIA_ORIGIN = "https://img.example.com"
+UPLOAD_PREFIX = "media/"
+LIBRARY_PREFIXES = "media/"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "photonrelic-example"
+database_id = "REPLACE_D1_DATABASE_ID"
+migrations_dir = "../../workers/library/migrations"
+
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "photonrelic-example-media"
