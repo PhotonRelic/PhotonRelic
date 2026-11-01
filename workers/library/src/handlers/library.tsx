@@ -210,6 +210,7 @@ export function libraryRoutes(deps: AppDeps) {
       q: (c.req.query('q') ?? '').trim().slice(0, SEARCH_QUERY_MAX),
       subject: cleanSubject(c.req.query('subject') ?? '') || null,
       tag: parseTags(c.req.query('tag') ?? '')[0] ?? null,
+      camera: (c.req.query('camera') ?? '').trim().slice(0, SEARCH_QUERY_MAX) || null,
       state: SEARCH_STATES.find((s) => s === requested) ?? 'all',
     };
     const pageNo = Math.max(1, Math.floor(Number(c.req.query('page')) || 1));

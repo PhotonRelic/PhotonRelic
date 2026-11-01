@@ -291,6 +291,7 @@ export function searchHref(f: SearchFilters, page = 1): string {
   if (f.q) params.set('q', f.q);
   if (f.subject !== null) params.set('subject', f.subject);
   if (f.tag !== null) params.set('tag', f.tag);
+  if (f.camera !== null) params.set('camera', f.camera);
   if (f.state !== 'all') params.set('state', f.state);
   if (page > 1) params.set('page', String(page));
   const qs = params.toString();
@@ -350,7 +351,11 @@ export function SearchPage({
 }) {
   const self = searchHref(filters, page);
   const narrowed =
-    filters.q !== '' || filters.subject !== null || filters.tag !== null || filters.state !== 'all';
+    filters.q !== '' ||
+    filters.subject !== null ||
+    filters.tag !== null ||
+    filters.camera !== null ||
+    filters.state !== 'all';
   const pages = Math.max(1, Math.ceil(total / pageSize));
   const first = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const last = Math.min(total, page * pageSize);
@@ -363,10 +368,10 @@ export function SearchPage({
       </PageHead>
       <p>
         <small class="muted">
-          Searches what the library knows about each file: its path, subject, tags, default alt text
-          and credit. Only files the library has seen are found, so a file put in the bucket some
-          other way appears here after a Rescan has noted it. Select tiles to file the results in
-          bulk, as in the Library.
+          Searches what the library knows about each file: its path, subject, tags, default alt
+          text, credit, and the camera and lens an upload recorded. Only files the library has seen
+          are found, so a file put in the bucket some other way appears here after a Rescan has
+          noted it. Select tiles to file the results in bulk, as in the Library.
         </small>
       </p>
       <form method="get" action="/library/search" class="filter-bar search-bar">
@@ -374,7 +379,7 @@ export function SearchPage({
           type="search"
           name="q"
           value={filters.q}
-          placeholder="Words from the path, tags, alt text or credit…"
+          placeholder="Words from the path, tags, alt text, credit or camera…"
           aria-label="Search the library"
           autofocus
         />
@@ -382,6 +387,9 @@ export function SearchPage({
           <input type="hidden" name="subject" value={filters.subject} />
         ) : null}
         {filters.tag !== null ? <input type="hidden" name="tag" value={filters.tag} /> : null}
+        {filters.camera !== null ? (
+          <input type="hidden" name="camera" value={filters.camera} />
+        ) : null}
         {filters.state !== 'all' ? (
           <input type="hidden" name="state" value={filters.state} />
         ) : null}
@@ -411,6 +419,12 @@ export function SearchPage({
         items={facets.tags}
         current={filters.tag}
         hrefFor={(v) => searchHref({ ...filters, tag: v })}
+      />
+      <FacetRow
+        label="Camera"
+        items={facets.cameras}
+        current={filters.camera}
+        hrefFor={(v) => searchHref({ ...filters, camera: v })}
       />
       <p class="search-count">
         <span class="n">{total}</span> {total === 1 ? 'file' : 'files'}{' '}

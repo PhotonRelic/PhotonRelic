@@ -572,7 +572,7 @@ export async function countDuplicateKeys(db: Db): Promise<number> {
 }
 
 // ---------------------------------------------------------------------------
-// Search: the FTS5 index over key, subject, tags, alt text and credit
+// Search: the FTS5 index over key, subject, tags, alt text, credit, camera and lens
 // ---------------------------------------------------------------------------
 
 /** unfiled and filed are both live rows; retired is its own state whatever the subject. */
@@ -584,6 +584,8 @@ export interface SearchFilters {
   q: string;
   subject: string | null;
   tag: string | null;
+  /** The exact camera text an upload recorded; a facet value, not free text. */
+  camera: string | null;
   state: SearchState;
 }
 
@@ -601,11 +603,13 @@ export interface Facet {
 export interface SearchFacets {
   subjects: Facet[];
   tags: Facet[];
+  cameras: Facet[];
 }
 
-/** Subjects and tags with more than this many values show the most used ones. */
+/** Subjects, tags and cameras with more than this many values show the most used ones. */
 export const FACET_SUBJECTS = 50;
 export const FACET_TAGS = 30;
+export const FACET_CAMERAS = 20;
 
 /**
  * The FTS5 query for what a person typed, or null when nothing was typed. Every
@@ -638,10 +642,13 @@ interface SearchSql {
 /**
  * The FROM and WHERE for a search. With a query, the matched rowids and their
  * bm25 rank come from the index (subject and tags weigh most, then alt text,
- * then the path and credit); the filters then apply to the joined rows. A
- * facet leaves its own filter out, so the list offers the other values.
+ * then the path, credit, camera and lens); the filters then apply to the
+ * joined rows. A facet leaves its own filter out, so the list offers the
+ * other values.
  */
-function searchSql(f: SearchFilters, omit: 'subject' | 'tag' | null = null): SearchSql {
+type FacetKind = 'subject' | 'tag' | 'camera';
+
+function searchSql(f: SearchFilters, omit: FacetKind | null = null): SearchSql {
   const params: unknown[] = [];
   const bind = (v: unknown) => {
     params.push(v);
@@ -649,13 +656,14 @@ function searchSql(f: SearchFilters, omit: 'subject' | 'tag' | null = null): Sea
   };
   const match = ftsQuery(f.q);
   const from = match
-    ? `assets a JOIN (SELECT rowid, bm25(assets_fts, 1.0, 3.0, 3.0, 2.0, 1.0) AS rank
+    ? `assets a JOIN (SELECT rowid, bm25(assets_fts, 1.0, 3.0, 3.0, 2.0, 1.0, 1.0, 1.0) AS rank
          FROM assets_fts WHERE assets_fts MATCH ${bind(match)}) m ON m.rowid = a.rowid`
     : 'assets a';
   const clauses: string[] = [];
   if (f.subject !== null && omit !== 'subject') clauses.push(`a.subject = ${bind(f.subject)}`);
   if (f.tag !== null && omit !== 'tag')
     clauses.push(`EXISTS (SELECT 1 FROM json_each(a.tags) WHERE value = ${bind(f.tag)})`);
+  if (f.camera !== null && omit !== 'camera') clauses.push(`a.camera = ${bind(f.camera)}`);
   if (f.state === 'unfiled') clauses.push('a.subject IS NULL AND a.retired = 0');
   else if (f.state === 'filed') clauses.push('a.subject IS NOT NULL AND a.retired = 0');
   else if (f.state === 'retired') clauses.push('a.retired = 1');
@@ -694,11 +702,12 @@ export async function searchAssets(
   return { assets: results.map(fromRow), total: count?.n ?? 0 };
 }
 
-/** The subjects and tags among the matches, most used first, each counted without its own filter. */
+/** The subjects, tags and cameras among the matches, most used first, each counted without its own filter. */
 export async function searchFacets(db: Db, filters: SearchFilters): Promise<SearchFacets> {
   const bySubject = searchSql(filters, 'subject');
   const byTag = searchSql(filters, 'tag');
-  const [subjects, tags] = await Promise.all([
+  const byCamera = searchSql(filters, 'camera');
+  const [subjects, tags, cameras] = await Promise.all([
     db
       .prepare(
         `SELECT a.subject AS value, COUNT(*) AS n FROM ${bySubject.from}${whereOf(
@@ -716,8 +725,17 @@ export async function searchFacets(db: Db, filters: SearchFilters): Promise<Sear
       )
       .bind(...byTag.params, FACET_TAGS)
       .all<Facet>(),
+    db
+      .prepare(
+        `SELECT a.camera AS value, COUNT(*) AS n FROM ${byCamera.from}${whereOf(
+          byCamera.where,
+          'a.camera IS NOT NULL',
+        )} GROUP BY a.camera ORDER BY n DESC, value LIMIT ?${byCamera.params.length + 1}`,
+      )
+      .bind(...byCamera.params, FACET_CAMERAS)
+      .all<Facet>(),
   ]);
-  return { subjects: subjects.results, tags: tags.results };
+  return { subjects: subjects.results, tags: tags.results, cameras: cameras.results };
 }
 
 // ---------------------------------------------------------------------------

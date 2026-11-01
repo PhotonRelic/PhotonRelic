@@ -5,15 +5,17 @@ import {
   forgetAsset,
   ftsQuery,
   noteSeen,
+  recordUpload,
   retireAsset,
   type SearchFilters,
   searchAssets,
   searchFacets,
+  type UploadRecord,
 } from '../src/library.js';
 import { bytes, harness } from './helpers.js';
 
 const NOW = new Date('2026-10-30T12:00:00.000Z');
-const ALL: SearchFilters = { q: '', subject: null, tag: null, state: 'all' };
+const ALL: SearchFilters = { q: '', subject: null, tag: null, camera: null, state: 'all' };
 
 type H = ReturnType<typeof harness>;
 
@@ -338,6 +340,103 @@ describe('facets', () => {
     const f = await searchFacets(h.db, ALL);
     expect(f.tags).toHaveLength(FACET_TAGS);
     expect(f.tags[0]).toEqual({ value: 't34', n: 2 });
+  });
+});
+
+describe('capture data', () => {
+  /** Two shoots and a stock file, uploaded with what the browser knew about each original. */
+  async function shoot(h: H): Promise<void> {
+    const up = async (key: string, capture: UploadRecord['capture'], when: string) =>
+      recordUpload(
+        h.db,
+        h.deps.layout,
+        {
+          key,
+          sha256: 'a'.repeat(63) + key.length.toString(16),
+          etag: null,
+          bytes: 100,
+          content_type: 'image/jpeg',
+          width: 800,
+          height: 600,
+          uploaded_by: 'a@example.com',
+          capture,
+        },
+        new Date(when),
+      );
+    await up(
+      'media/events/launch/stage.jpg',
+      { capturedAt: '2026-05-30T14:55:50', camera: 'NIKON Z 7', lens: 'NIKKOR Z 85mm f/1.8 S' },
+      '2026-10-01T00:00:00.000Z',
+    );
+    await up(
+      'media/events/launch/crowd.jpg',
+      { capturedAt: '2026-05-30T15:02:11', camera: 'NIKON Z 7' },
+      '2026-10-02T00:00:00.000Z',
+    );
+    await up(
+      'media/events/launch/signing.jpg',
+      { camera: 'Canon EOS R5', lens: 'RF35mm F1.8' },
+      '2026-10-03T00:00:00.000Z',
+    );
+    await up('media/events/launch/stock.jpg', null, '2026-10-04T00:00:00.000Z');
+  }
+
+  it('finds a file by its camera or lens', async () => {
+    const h = harness();
+    await shoot(h);
+    expect(await keys(h, 'nikon')).toEqual([
+      'media/events/launch/crowd.jpg',
+      'media/events/launch/stage.jpg',
+    ]);
+    expect(await keys(h, 'nikkor 85mm')).toEqual(['media/events/launch/stage.jpg']);
+    expect(await keys(h, 'canon')).toEqual(['media/events/launch/signing.jpg']);
+    expect(await keys(h, 'rf35')).toEqual(['media/events/launch/signing.jpg']);
+  });
+
+  it('indexes the camera an upload completes on a row a Rescan noted first', async () => {
+    const h = harness();
+    await noteSeen(
+      h.db,
+      h.deps.layout,
+      [{ key: 'media/events/launch/stage.jpg', size: 10, uploaded: null, etag: 'e1' }],
+      NOW,
+    );
+    expect(await keys(h, 'nikon')).toEqual([]);
+    await shoot(h);
+    expect(await keys(h, 'nikon')).toContain('media/events/launch/stage.jpg');
+  });
+
+  it('offers the cameras among the matches as a facet and filters by one exactly', async () => {
+    const h = harness();
+    await shoot(h);
+    expect((await searchFacets(h.db, ALL)).cameras).toEqual([
+      { value: 'NIKON Z 7', n: 2 },
+      { value: 'Canon EOS R5', n: 1 },
+    ]);
+    expect(await keys(h, '', { camera: 'NIKON Z 7' })).toEqual([
+      'media/events/launch/crowd.jpg',
+      'media/events/launch/stage.jpg',
+    ]);
+    expect(await keys(h, '', { camera: 'nikon z 7' })).toEqual([]);
+    // The camera facet leaves its own filter out; the others keep it.
+    const f = await searchFacets(h.db, { ...ALL, camera: 'Canon EOS R5' });
+    expect(f.cameras).toEqual([
+      { value: 'NIKON Z 7', n: 2 },
+      { value: 'Canon EOS R5', n: 1 },
+    ]);
+    expect(f.subjects).toEqual([{ value: 'events/launch', n: 1 }]);
+  });
+
+  it('shows the camera facet on the page and keeps it in the links', async () => {
+    const h = harness();
+    await shoot(h);
+    const html = await (await h.req('/library/search?q=launch')).text();
+    expect(html).toContain('Camera');
+    expect(html).toContain('camera=NIKON+Z+7');
+    const narrowed = await (await h.req('/library/search?camera=Canon+EOS+R5')).text();
+    expect(narrowed).toContain('class="facet active"');
+    expect(narrowed).toContain('signing.jpg');
+    expect(narrowed).not.toContain('crowd.jpg');
   });
 });
 
