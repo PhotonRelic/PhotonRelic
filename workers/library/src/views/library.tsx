@@ -634,6 +634,51 @@ export function UnusedPage({
   );
 }
 
+/**
+ * What the upload knew about the original: the prep tool strips EXIF on the
+ * user's machine, so this is the only place the capture date and camera
+ * survive. Shown only when something was recorded; a Rescan never fills it,
+ * since the Worker does not read image bytes.
+ */
+export function CaptureBlock({ asset }: { asset: Asset | null }) {
+  if (!asset) return null;
+  const { captured_at, camera, lens, original_width, original_height } = asset;
+  if (!captured_at && !camera && !lens && !original_width) return null;
+  const original =
+    original_width && original_height
+      ? asset.width &&
+        asset.height &&
+        (asset.width !== original_width || asset.height !== original_height)
+        ? `${original_width} × ${original_height} · stored at ${asset.width} × ${asset.height}`
+        : `${original_width} × ${original_height}`
+      : null;
+  return (
+    <>
+      <h4>Capture</h4>
+      <table class="capture">
+        <tbody>
+          <tr>
+            <td>Taken</td>
+            <td>{captured_at ? when(captured_at) : '—'}</td>
+          </tr>
+          <tr>
+            <td>Camera</td>
+            <td>{camera ?? '—'}</td>
+          </tr>
+          <tr>
+            <td>Lens</td>
+            <td>{lens ?? '—'}</td>
+          </tr>
+          <tr>
+            <td>Original size</td>
+            <td class="num">{original ?? '—'}</td>
+          </tr>
+        </tbody>
+      </table>
+    </>
+  );
+}
+
 /** What the file page knows about a key's hits: nothing configured, the counts, or why not. */
 export type UsageStatus =
   | { state: 'off' }
@@ -803,6 +848,7 @@ export function FilePage({
               ) : null}
             </tbody>
           </table>
+          <CaptureBlock asset={asset} />
           <UsageBlock usage={usage} />
         </article>
         <article>
@@ -957,8 +1003,11 @@ export function UploadPage({
           nothing already stored: drop the same folder again and only what is missing goes up. Up to{' '}
           {UPLOAD_MAX_LABEL} a file, the resizer's input cap: a larger file is refused, so run the
           shoot through <code>tools/prep-images.py</code> first (it resizes to a chosen size or the
-          largest that fits, strips metadata and fixes the names). The bucket holds web copies; keep
-          your originals elsewhere.
+          largest that fits, strips metadata and fixes the names). Drop its output folder whole: the
+          capture date, camera and lens it noted in <code>photonrelic-manifest.json</code> go up
+          with each file, and the manifest stays behind. A file that was not prepped has those read
+          from its own EXIF here, and nothing else. The bucket holds web copies; keep your originals
+          elsewhere.
         </small>
       </p>
       <div

@@ -48,6 +48,12 @@ export interface AssetRow {
   filed_at: string | null;
   retired: number;
   retired_note: string | null;
+  /** From the upload's capture entry (manifest or browser EXIF); null for everything else. */
+  captured_at: string | null;
+  camera: string | null;
+  lens: string | null;
+  original_width: number | null;
+  original_height: number | null;
 }
 
 export interface Asset extends Omit<AssetRow, 'tags' | 'retired'> {
@@ -164,9 +170,16 @@ export interface UploadRecord {
   width: number | null;
   height: number | null;
   uploaded_by: string;
+  /** What the browser knew about the original; absent when it sent nothing. */
+  capture?: Capture | null | undefined;
 }
 
-/** An upload made here: filed under its subject at once, hash known, source 'upload'. */
+/**
+ * An upload made here: filed under its subject at once, hash known, source
+ * 'upload'. A retry that sends no capture entry keeps the one already recorded:
+ * the browser only reads EXIF once per file, and the record must not lose it
+ * to a second attempt.
+ */
 export async function recordUpload(
   db: Db,
   layout: MediaLayout,
@@ -174,15 +187,22 @@ export async function recordUpload(
   now: Date,
 ): Promise<void> {
   const subject = subjectOf(layout, u.key);
+  const cap = u.capture ?? {};
   await db
     .prepare(
-      `INSERT INTO assets (key, etag, sha256, bytes, content_type, width, height, subject, source, first_seen, uploaded_by, filed_by, filed_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'upload', ?9, ?10, ?10, ?9)
+      `INSERT INTO assets (key, etag, sha256, bytes, content_type, width, height, subject, source, first_seen, uploaded_by, filed_by, filed_at,
+                           captured_at, camera, lens, original_width, original_height)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'upload', ?9, ?10, ?10, ?9, ?11, ?12, ?13, ?14, ?15)
        ON CONFLICT(key) DO UPDATE SET etag = excluded.etag, sha256 = excluded.sha256, bytes = excluded.bytes,
          content_type = excluded.content_type, width = excluded.width, height = excluded.height,
          subject = COALESCE(assets.subject, excluded.subject),
          source = 'upload', uploaded_by = excluded.uploaded_by,
-         filed_by = COALESCE(assets.filed_by, excluded.filed_by), filed_at = COALESCE(assets.filed_at, excluded.filed_at)`,
+         filed_by = COALESCE(assets.filed_by, excluded.filed_by), filed_at = COALESCE(assets.filed_at, excluded.filed_at),
+         captured_at = COALESCE(excluded.captured_at, assets.captured_at),
+         camera = COALESCE(excluded.camera, assets.camera),
+         lens = COALESCE(excluded.lens, assets.lens),
+         original_width = COALESCE(excluded.original_width, assets.original_width),
+         original_height = COALESCE(excluded.original_height, assets.original_height)`,
     )
     .bind(
       u.key,
@@ -195,8 +215,107 @@ export async function recordUpload(
       subject,
       now.toISOString(),
       u.uploaded_by,
+      cap.capturedAt ?? null,
+      cap.camera ?? null,
+      cap.lens ?? null,
+      cap.originalWidth ?? null,
+      cap.originalHeight ?? null,
     )
     .run();
+}
+
+// ---------------------------------------------------------------------------
+// Capture: what the browser knew about the original
+// ---------------------------------------------------------------------------
+
+/**
+ * One file's entry from the prep tool's manifest, or what the browser read from
+ * the file's own EXIF. Only these fields exist: there is no GPS, serial number
+ * or owner name here because neither reader looks for them.
+ */
+export interface Capture {
+  /** ISO 8601 as the camera wrote it; no timezone unless the camera gave one. */
+  capturedAt?: string;
+  camera?: string;
+  lens?: string;
+  originalWidth?: number;
+  originalHeight?: number;
+}
+
+/** The longest `X-Capture` header the server will read; the fields fit in a tenth of it. */
+export const CAPTURE_HEADER_MAX = 2048;
+const CAPTURE_TEXT_MAX = 120;
+const CAPTURE_PIXELS_MAX = 1_000_000;
+// A date, optionally a time to the second or millisecond, optionally an offset or Z.
+const CAPTURED_AT =
+  /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})?)?$/;
+const hasControl = (s: string) =>
+  [...s].some((ch) => ch.charCodeAt(0) < 32 || ch.charCodeAt(0) === 127);
+
+export interface ParsedCapture {
+  /** Null when nothing usable was sent. */
+  capture: Capture | null;
+  /** Why a field, or the whole header, was dropped; empty when it was all taken. */
+  problems: string[];
+}
+
+/**
+ * The `X-Capture` header: percent-encoded JSON, so a camera name with a space
+ * or a non-ASCII letter travels in a header safely. The upload never fails on
+ * it: a header that cannot be read is dropped and said so; a field that fails
+ * its check is dropped on its own; keys this version does not know are
+ * ignored, so an older server takes a newer browser's entry.
+ */
+export function parseCaptureHeader(raw: string | undefined): ParsedCapture {
+  if (raw === undefined || raw === '') return { capture: null, problems: [] };
+  if (raw.length > CAPTURE_HEADER_MAX)
+    return { capture: null, problems: [`X-Capture is over ${CAPTURE_HEADER_MAX} characters.`] };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(decodeURIComponent(raw));
+  } catch {
+    return { capture: null, problems: ['X-Capture is not percent-encoded JSON.'] };
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed))
+    return { capture: null, problems: ['X-Capture is not a JSON object.'] };
+  const o = parsed as Record<string, unknown>;
+  const problems: string[] = [];
+  const capture: Capture = {};
+  const text = (k: 'camera' | 'lens') => {
+    const v = o[k];
+    if (v === undefined || v === null) return;
+    const s = typeof v === 'string' ? v.trim() : '';
+    if (s === '' || s.length > CAPTURE_TEXT_MAX || hasControl(s)) {
+      problems.push(`${k}: not a short line of text.`);
+      return;
+    }
+    capture[k] = s;
+  };
+  const pixels = (k: 'originalWidth' | 'originalHeight') => {
+    const v = o[k];
+    if (v === undefined || v === null) return;
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 1 || v > CAPTURE_PIXELS_MAX) {
+      problems.push(`${k}: not a whole number of pixels.`);
+      return;
+    }
+    capture[k] = v;
+  };
+  if (o.capturedAt !== undefined && o.capturedAt !== null) {
+    const s = typeof o.capturedAt === 'string' ? o.capturedAt.trim() : '';
+    if (CAPTURED_AT.test(s)) capture.capturedAt = s;
+    else problems.push('capturedAt: not an ISO 8601 date.');
+  }
+  text('camera');
+  text('lens');
+  pixels('originalWidth');
+  pixels('originalHeight');
+  // A width without a height says nothing about the original's size.
+  if ((capture.originalWidth === undefined) !== (capture.originalHeight === undefined)) {
+    delete capture.originalWidth;
+    delete capture.originalHeight;
+    problems.push('originalWidth and originalHeight go together.');
+  }
+  return { capture: Object.keys(capture).length ? capture : null, problems };
 }
 
 /** `{name}` is the file name's words, `{subject}` the last subject folder's words. */

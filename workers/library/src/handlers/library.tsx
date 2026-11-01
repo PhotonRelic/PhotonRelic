@@ -27,6 +27,7 @@ import {
   listExpiring,
   listUnfiled,
   type PrecheckEntry,
+  parseCaptureHeader,
   parseTags,
   precheck,
   recordUpload,
@@ -616,6 +617,11 @@ export function libraryRoutes(deps: AppDeps) {
       const n = Number(c.req.header(h) ?? 'NaN');
       return Number.isInteger(n) && n > 0 ? n : null;
     };
+    // The capture entry is a courtesy from the browser, not a condition of the
+    // upload: a bad one is logged and dropped, and the response says what was dropped.
+    const { capture, problems } = parseCaptureHeader(c.req.header('x-capture'));
+    if (problems.length) console.warn(`X-Capture for ${key} partly ignored: ${problems.join(' ')}`);
+    const warnings = problems.length ? { warnings: problems } : {};
     const record = async (head: { size: number; etag: string | null } | null, action: string) => {
       await recordUpload(
         deps.db,
@@ -629,6 +635,7 @@ export function libraryRoutes(deps: AppDeps) {
           width: num('x-width'),
           height: num('x-height'),
           uploaded_by: who,
+          capture,
         },
         deps.now(),
       );
@@ -645,7 +652,7 @@ export function libraryRoutes(deps: AppDeps) {
       // is never overwritten.
       if (existing.customMetadata?.sha256 === sha256) {
         await record(existing, 'library.upload_completed');
-        return c.json({ ok: true, key, bytes: existing.size, completed: true });
+        return c.json({ ok: true, key, bytes: existing.size, completed: true, ...warnings });
       }
       return c.json(
         {
@@ -662,7 +669,7 @@ export function libraryRoutes(deps: AppDeps) {
     });
     const head = await media.head(key);
     await record(head, 'library.uploaded');
-    return c.json({ ok: true, key, bytes: head?.size ?? length });
+    return c.json({ ok: true, key, bytes: head?.size ?? length, ...warnings });
   });
 
   // Duplicates --------------------------------------------------------------
