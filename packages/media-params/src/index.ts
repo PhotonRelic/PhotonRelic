@@ -205,6 +205,17 @@ export interface AssetRecord {
   credit: string | null;
   /** ISO 8601, when the library first saw the key. */
   firstSeen: string;
+  /**
+   * What the upload recorded about the original before the prep tool stripped
+   * its tags: the capture date as the camera wrote it (no timezone guessed),
+   * the camera's make and model, the lens, and the pixel size before any
+   * resize. Null when nothing was recorded; a Rescan never fills these.
+   */
+  capturedAt: string | null;
+  camera: string | null;
+  lens: string | null;
+  originalWidth: number | null;
+  originalHeight: number | null;
 }
 
 export interface AssetResponse {

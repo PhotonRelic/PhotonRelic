@@ -114,14 +114,19 @@ function file(
     height: number | null;
     bytes: number | null;
     retired: boolean;
+    capturedAt: string | null;
+    camera: string | null;
+    lens: string | null;
+    originalWidth: number | null;
   }> = {},
 ) {
   db.raw
     .prepare(
       `INSERT INTO assets (key, etag, sha256, bytes, content_type, width, height, subject, tags, alt_default, credit,
-         source, first_seen, uploaded_by, filed_by, filed_at, retired, retired_note)
+         source, first_seen, uploaded_by, filed_by, filed_at, retired, retired_note,
+         captured_at, camera, lens, original_width, original_height)
        VALUES (?, 'etag', 'sha', ?, 'image/jpeg', ?, ?, ?, ?, ?, ?, 'upload', '2026-10-01T00:00:00.000Z',
-         'someone@example.com', 'someone@example.com', '2026-10-02T00:00:00.000Z', ?, ?)`,
+         'someone@example.com', 'someone@example.com', '2026-10-02T00:00:00.000Z', ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       key,
@@ -134,6 +139,11 @@ function file(
       row.credit === undefined ? null : row.credit,
       row.retired ? 1 : 0,
       row.retired ? 'duplicate' : null,
+      row.capturedAt ?? null,
+      row.camera ?? null,
+      row.lens ?? null,
+      row.originalWidth ?? null,
+      row.originalWidth === undefined ? null : 4000,
     );
 }
 
@@ -434,7 +444,32 @@ describe('metadata API', () => {
         alt: 'A workbench under a window',
         credit: 'Studio',
         firstSeen: '2026-10-01T00:00:00.000Z',
+        capturedAt: null,
+        camera: null,
+        lens: null,
+        originalWidth: null,
+        originalHeight: null,
       },
+    });
+  });
+
+  it('includes the capture data an upload recorded', async () => {
+    const db = filed();
+    file(db, 'media/workshop/lathe.jpg', {
+      capturedAt: '2026-05-30T14:55:50',
+      camera: 'NIKON Z 7',
+      lens: 'NIKKOR Z 85mm f/1.8 S',
+      originalWidth: 6000,
+    });
+    const h = harness({ db });
+    expect(
+      (await json(await h.get('/api/v1/assets/media/workshop/lathe.jpg'))).asset,
+    ).toMatchObject({
+      capturedAt: '2026-05-30T14:55:50',
+      camera: 'NIKON Z 7',
+      lens: 'NIKKOR Z 85mm f/1.8 S',
+      originalWidth: 6000,
+      originalHeight: 4000,
     });
   });
 
