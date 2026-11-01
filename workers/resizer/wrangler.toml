@@ -50,6 +50,9 @@ bucket_name = "photonrelic-media"
 
 # Cloudflare Images: billed per unique source-and-parameters pair per month.
 # Without it, objects are served as stored with `x-media-transform: unavailable`.
+# The account must be on Workers Paid: a cold resize of a large original costs
+# a few hundred milliseconds of CPU, and the Free plan's 10 ms per request
+# kills a page of fresh thumbnails with error 1102 (see the README's Setup).
 [images]
 binding = "IMAGES"
 

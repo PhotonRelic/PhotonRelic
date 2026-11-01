@@ -27,6 +27,7 @@ GET /media/products/chair.jpg?w=320&ar=1:1&f=webp  320 × 320 cover crop, WebP
 - Anything off the menu gets a 400. A fixed menu limits how many unique transformations anyone can request, and so limits your Images bill. To change the menu, set `MEDIA_WIDTHS` and `MEDIA_ASPECTS` in `wrangler.toml`.
 - Only keys under `SERVED_PREFIXES` with an image extension are served. SVG is never served.
 - A cover crop (`?ar=`) is cut around the focal point set in the library when the resizer has the `DB` binding (see the metadata API below); without a point, or without the binding, Cloudflare Images picks the crop (`gravity: auto`). Plain widths are never cropped, so the point does not touch them.
+- A cold resize of a large original uses a few hundred milliseconds of CPU in the Worker, which is why the account must be on Workers Paid (see [Setup](#setup)); cache hits use none.
 - Resized output is cached at the edge for a day (`s-maxage=86400`). A source over the Images binding's 20 MB input cap, or a deployment without the binding, is served as stored with an `x-media-transform` header saying why.
 - By default any site can embed the images: every response carries `Access-Control-Allow-Origin: *` and `Cross-Origin-Resource-Policy: cross-origin`.
 - Given the library's database (a read-only `DB` binding, commented out in `wrangler.toml`), a key whose rights have expired (the library's **Expires** date has passed) answers `410 Gone` with code `EXPIRED` on a cache miss, before any transform. A copy already at the edge serves out its day; the 410 is not cached, so a new date takes effect at once. Without the binding, expiry only retires the file in the library and the resizer serves it as before.
@@ -132,7 +133,9 @@ selection bar files or tags them as anywhere else.
 
 ## Setup
 
-You need Node 22.13 or later, pnpm, and a Cloudflare account with R2, D1 and (for resizing) Images enabled.
+You need Node 22.13 or later, pnpm, and a Cloudflare account on the **Workers Paid** plan with R2, D1 and (for resizing) Images enabled.
+
+Workers Paid is not optional for the resizer. A cold resize of a 10 MB original costs a few hundred milliseconds of CPU inside the Worker, and the Free plan allows 10 ms per request: one thumbnail at a time rides the runtime's allowance for occasional overruns, but a page of twenty new thumbnails asks for twenty at once and most are killed with `Worker exceeded CPU time limit` (error 1102) before the binding answers. On Workers Paid the default is 30 seconds per request and the same page loads in a few seconds. After changing the plan, deploy the resizer again: a running version keeps the limit it was deployed with.
 
 ```sh
 pnpm install
