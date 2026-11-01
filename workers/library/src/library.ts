@@ -340,8 +340,9 @@ export function parseCaptureHeader(raw: string | undefined): ParsedCapture {
 /**
  * New bytes under an existing key, through the file page's Replace. The row
  * keeps everything a person set (subject, tags, alt text, credit, the retired
- * state) and its first_seen; what describes the bytes is replaced. A key with
- * no row yet is recorded as an upload would be.
+ * state) and its first_seen; what describes the bytes is replaced, and what
+ * described the old bytes alone is forgotten: the capture data belonged to the
+ * old file. A key with no row yet is recorded as an upload would be.
  */
 export async function recordReplace(
   db: Db,
@@ -355,7 +356,8 @@ export async function recordReplace(
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'upload', ?9, ?10, ?10, ?9)
        ON CONFLICT(key) DO UPDATE SET etag = excluded.etag, sha256 = excluded.sha256, bytes = excluded.bytes,
          content_type = excluded.content_type, width = excluded.width, height = excluded.height,
-         source = 'upload', uploaded_by = excluded.uploaded_by`,
+         source = 'upload', uploaded_by = excluded.uploaded_by,
+         captured_at = NULL, camera = NULL, lens = NULL, original_width = NULL, original_height = NULL`,
     )
     .bind(
       u.key,

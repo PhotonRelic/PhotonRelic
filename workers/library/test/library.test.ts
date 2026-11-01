@@ -644,6 +644,34 @@ describe('replace', () => {
     });
   });
 
+  it('forgets the old bytes’ capture data', async () => {
+    const h = harness();
+    await h.put(KEY, jpeg('first'), {
+      'x-width': '800',
+      'x-height': '600',
+      'x-capture': encodeURIComponent(
+        JSON.stringify({ capturedAt: '2026-05-04T13:22:10', camera: 'Canon EOS R5' }),
+      ),
+    });
+    await h.form('/library/file/save', [
+      ['key', KEY],
+      ['subject', 'products/chairs'],
+    ]);
+    expect(await getAsset(h.db, KEY)).toMatchObject({
+      captured_at: '2026-05-04T13:22:10',
+      camera: 'Canon EOS R5',
+    });
+    expect((await h.replace(KEY, jpeg('second'))).status).toBe(200);
+    expect(await getAsset(h.db, KEY)).toMatchObject({
+      subject: 'products/chairs',
+      captured_at: null,
+      camera: null,
+      lens: null,
+      original_width: null,
+      original_height: null,
+    });
+  });
+
   it('says so without a purge, and logs a failed purge without failing the replace', async () => {
     const h = harness();
     await filed(h);
