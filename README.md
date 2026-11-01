@@ -10,7 +10,7 @@ It has two Workers. You can use either one on its own.
 
 | Part | What it does |
 | --- | --- |
-| [`workers/resizer`](workers/resizer) | **Public.** Serves images from an R2 bucket at their own path and resizes them on request from a fixed menu (`?w=`, `?ar=`, `?f=`). Output is cached at the edge. Useful to anyone with images in R2, with or without the library. |
+| [`workers/resizer`](workers/resizer) | **Public.** Serves images from an R2 bucket at their own path and resizes them on request from a fixed menu (`?w=`, `?ar=`, `?f=`). Output is cached at the edge. Useful to anyone with images in R2, with or without the library. Given the library's database, it also answers a read-only [metadata API](#metadata-api) for alt text, dimensions and credit. |
 | [`workers/library`](workers/library) | **Private, behind Access.** The media library: browse the bucket, upload a whole shoot from the browser, file images by subject, tags, alt text, credit and rights, find duplicates, see what is about to expire, retire or delete files. Every write goes into an audit log. |
 | [`packages/media-params`](packages/media-params) | The resize menu and URL builder, with no dependencies. Both Workers use it, and so can a site that builds image URLs. |
 | [`tools/prep-images.py`](tools/prep-images.py) | Prepares a shoot on your machine before upload: resizes it to fit the resizer's input cap, fixes the names and strips EXIF/GPS. |
@@ -31,6 +31,38 @@ GET /media/products/chair.jpg?w=320&ar=1:1&f=webp  320 × 320 cover crop, WebP
 - Given the library's database (a read-only `DB` binding, commented out in `wrangler.toml`), a key whose rights have expired (the library's **Expires** date has passed) answers `410 Gone` with code `EXPIRED` on a cache miss, before any transform. A copy already at the edge serves out its day; the 410 is not cached, so a new date takes effect at once. Without the binding, expiry only retires the file in the library and the resizer serves it as before.
 - With a Workers Analytics Engine binding `USAGE` (`[[analytics_engine_datasets]]`, dataset `photonrelic_usage`), every image served is counted: one data point per 200, indexed by the key, saying whether it went out as stored or resized, in which format, and whether the edge cache answered. Nothing is written for a 4xx or 5xx, and without the binding nothing is written at all. The library reads the dataset back; see [Usage](#usage).
 - To limit embedding to your own sites, set `ALLOWED_ORIGINS` to the hosts whose pages may use the images, e.g. `www.example.com, example.com, *.example.com, media-admin.example.com`. A request is judged by its `Origin` header, then its `Referer`; a page on any other host gets a 403, and allowed pages get their own origin back in `Access-Control-Allow-Origin`. `*.example.com` matches subdomains only, so list the bare domain too, and include the library's hostname or its thumbnails stop loading. Requests with neither header (a direct link, an email client, a privacy browser) are let through unless `ALLOW_EMPTY_REFERER = "false"`. This stops other websites hotlinking your images; it does not stop anyone downloading a file and hosting it themselves, since a public image URL has to be fetchable without a login. If you would rather not configure the Worker, a WAF custom rule on the resizer's hostname that blocks requests whose `Referer` is not one of your sites does the same job from the dashboard.
+
+### Metadata API
+
+A site that embeds images cannot reach the library for alt text, because the library sits behind Access. Give the resizer a read-only `DB` binding to the library's database and it answers for it, as JSON:
+
+```
+GET /api/v1/assets/media/products/chair.jpg               one key
+GET /api/v1/assets?prefix=media/products/&tag=hero&limit=50   a page, in key order
+```
+
+```json
+{
+  "ok": true,
+  "asset": {
+    "key": "media/products/chair.jpg",
+    "bytes": 412833,
+    "contentType": "image/jpeg",
+    "width": 2048,
+    "height": 1365,
+    "subject": "products",
+    "tags": ["hero", "oak"],
+    "alt": "Oak chair, three-quarter view",
+    "credit": "Studio",
+    "firstSeen": "2026-10-01T09:12:44.000Z"
+  }
+}
+```
+
+- The listing takes `prefix` (must be under `SERVED_PREFIXES`), `subject`, `tag`, `limit` (default 100, at most 500) and `cursor`; it answers `{ ok, assets, cursor }`, and `cursor` is null on the last page. Anything else in the query string is a 400.
+- Only what the library filed is served: the hashes, the audit log and who filed what stay behind Access. A retired key is a 404 here even though it still serves as an image, and a key outside `SERVED_PREFIXES` is a 404 too. Without the binding every call is a 404 with the code `API_UNAVAILABLE`; images are unaffected.
+- Answers are cached at the edge for a minute (`s-maxage=60`) and not by browsers, so filing in the library shows up within the minute. Every answer carries `Access-Control-Allow-Origin: *`, whatever `ALLOWED_ORIGINS` says: the embed policy judges pages by their `Referer`, and a build tool sends none.
+- [`packages/media-params`](packages/media-params) exports the `AssetRecord`, `AssetResponse` and `AssetListResponse` types and the `assetUrl(origin, key)` and `assetListUrl(origin, opts)` builders, so a site can fetch the metadata with the same package it builds image URLs with.
 
 ## The library
 
@@ -110,8 +142,10 @@ a private repo with PhotonRelic as a submodule instead, and point `main`, `asset
    script can create the organisation when `ACCESS_TEAM_NAME` is set and Access has been enabled). For
    [usage](#usage), also a second token with Account Analytics Read only, as `ANALYTICS_TOKEN`.
 3. Provision. This creates the Access application (allowing the email domains, One-time PIN sign-in), the
-   bucket and the database, and writes the team domain, Audience tag and database id into `library.toml`.
-   It is idempotent; re-run it after changing the email domains and the policy is updated.
+   bucket and the database, and writes the team domain, Audience tag and database id into `library.toml`,
+   and the database id into `resizer.toml` too, where the resizer binds the same database for its metadata
+   API (drop that block to deploy the resizer without it). It is idempotent; re-run it after changing the
+   email domains and the policy is updated.
    ```sh
    sh scripts/provision.sh deploy/production
    ```
@@ -133,7 +167,7 @@ lists can also be previewed.
 | resizer | `MEDIA_WIDTHS`, `MEDIA_ASPECTS` | the menu above | Comma-separated overrides for the resize menu |
 | resizer | `ALLOWED_ORIGINS` | unset (any page) | Comma-separated hosts whose pages may embed images; `*.example.com` for subdomains |
 | resizer | `ALLOW_EMPTY_REFERER` | `true` | With `ALLOWED_ORIGINS`: let requests with no `Origin` or `Referer` through |
-| resizer | `DB` binding | unset | The library's D1 database, read only; with it, expired keys answer 410 |
+| resizer | `DB` (binding) | unset | The library's D1 database, read only; turns on the metadata API, and a key whose rights have expired answers 410 |
 | library | `UPLOAD_PREFIX` | `media/` | Where uploads go |
 | library | `LIBRARY_PREFIXES` | `UPLOAD_PREFIX` | Comma-separated roots the library lists |
 | library | `MEDIA_ORIGIN` | unset | The resizer's origin. When unset, previews are streamed whole through the library. |

@@ -61,3 +61,12 @@ binding = "IMAGES"
 # [[analytics_engine_datasets]]
 # binding = "USAGE"
 # dataset = "photonrelic_usage"
+
+# Optional: the library's database, read only, for the public metadata API
+# (GET /api/v1/assets/<key>). Point it at the same database as the library's
+# wrangler.toml; the library runs the migrations. Without it the API answers
+# 404 `API_UNAVAILABLE` and images are unaffected.
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "photonrelic"
+# database_id = "00000000-0000-0000-0000-000000000000"

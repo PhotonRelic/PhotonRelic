@@ -185,3 +185,67 @@ export function usageIndex(key: string): string {
   for (const b of bytes) h = ((h ^ BigInt(b)) * 0x100000001b3n) & 0xffffffffffffffffn;
   return `#${h.toString(16).padStart(16, '0')}`;
 }
+
+/**
+ * The resizer's public metadata API: `GET /api/v1/assets/<key>` and
+ * `GET /api/v1/assets?prefix=&subject=&tag=&limit=&cursor=`. A site that
+ * embeds images can fetch alt text, dimensions and credit for a key without
+ * going through the library, which sits behind Access. Read only, and only
+ * what the library filed: no audit trail, no identities.
+ */
+export interface AssetRecord {
+  key: string;
+  bytes: number | null;
+  contentType: string | null;
+  width: number | null;
+  height: number | null;
+  subject: string | null;
+  tags: string[];
+  alt: string;
+  credit: string | null;
+  /** ISO 8601, when the library first saw the key. */
+  firstSeen: string;
+}
+
+export interface AssetResponse {
+  ok: true;
+  asset: AssetRecord;
+}
+
+export interface AssetListResponse {
+  ok: true;
+  assets: AssetRecord[];
+  /** Pass back as `cursor` for the next page; null on the last page. */
+  cursor: string | null;
+}
+
+export interface AssetListQuery {
+  /** A key prefix under the resizer's served prefixes; unset lists them all. */
+  prefix?: string;
+  subject?: string;
+  tag?: string;
+  /** 1 to 500; the resizer's default is 100. */
+  limit?: number;
+  cursor?: string;
+}
+
+export const ASSETS_PATH = '/api/v1/assets';
+
+/** The metadata URL for a key, encoded per segment like `mediaUrl`. */
+export function assetUrl(origin: string, key: string): string {
+  const path = key.split('/').map(encodeURIComponent).join('/');
+  return `${origin.replace(/\/$/, '')}${ASSETS_PATH}/${path}`;
+}
+
+/** The listing URL; only the filters given appear in the query string. */
+export function assetListUrl(origin: string, opts: AssetListQuery = {}): string {
+  const q = new URLSearchParams();
+  if (opts.prefix !== undefined) q.set('prefix', opts.prefix);
+  if (opts.subject !== undefined) q.set('subject', opts.subject);
+  if (opts.tag !== undefined) q.set('tag', opts.tag);
+  if (opts.limit !== undefined) q.set('limit', String(opts.limit));
+  if (opts.cursor !== undefined) q.set('cursor', opts.cursor);
+  const base = `${origin.replace(/\/$/, '')}${ASSETS_PATH}`;
+  const s = q.toString();
+  return s ? `${base}?${s}` : base;
+}

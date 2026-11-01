@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  assetListUrl,
+  assetUrl,
   DEFAULT_MENU,
   mediaUrl,
   menuFromLists,
@@ -96,5 +98,31 @@ describe('usageIndex', () => {
     expect(usageIndex(long)).not.toBe(usageIndex(`${long.slice(0, -4)}-2.jpg`));
     // Bytes, not characters: a multi-byte name over the cap is hashed too.
     expect(usageIndex(`media/${'é'.repeat(60)}.jpg`)).toMatch(/^#/);
+  });
+});
+
+describe('assetUrl and assetListUrl', () => {
+  it('builds the metadata URL for a key, encoded per segment like mediaUrl', () => {
+    expect(assetUrl('https://img.example.com/', 'media/a b/c.jpg')).toBe(
+      'https://img.example.com/api/v1/assets/media/a%20b/c.jpg',
+    );
+    expect(assetUrl('https://img.example.com', 'media/café.jpg')).toBe(
+      'https://img.example.com/api/v1/assets/media/caf%C3%A9.jpg',
+    );
+  });
+
+  it('builds the listing URL with only the filters given', () => {
+    expect(assetListUrl('https://img.example.com/')).toBe('https://img.example.com/api/v1/assets');
+    expect(
+      assetListUrl('https://img.example.com', {
+        prefix: 'media/products/',
+        subject: 'products',
+        tag: 'hero shot',
+        limit: 50,
+        cursor: 'bWVkaWEvYS5qcGc',
+      }),
+    ).toBe(
+      'https://img.example.com/api/v1/assets?prefix=media%2Fproducts%2F&subject=products&tag=hero+shot&limit=50&cursor=bWVkaWEvYS5qcGc',
+    );
   });
 });
