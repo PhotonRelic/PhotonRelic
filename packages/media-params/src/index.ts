@@ -167,3 +167,21 @@ export function mediaUrl(
   q.set('f', opts.f ?? 'auto');
   return `${base}?${q}`;
 }
+
+/** Analytics Engine takes one index per data point, of at most this many bytes. */
+export const USAGE_INDEX_MAX_BYTES = 96;
+
+/**
+ * The Analytics Engine index for a key: the key itself when it fits, else a
+ * stable hash of it (FNV-1a 64, hex, marked with `#` so it can never collide
+ * with a real key, which always starts with a served prefix). The resizer
+ * writes it and the library queries by it, so both import this one function
+ * and a long key is counted rather than dropped.
+ */
+export function usageIndex(key: string): string {
+  const bytes = new TextEncoder().encode(key);
+  if (bytes.byteLength <= USAGE_INDEX_MAX_BYTES) return key;
+  let h = 0xcbf29ce484222325n;
+  for (const b of bytes) h = ((h ^ BigInt(b)) * 0x100000001b3n) & 0xffffffffffffffffn;
+  return `#${h.toString(16).padStart(16, '0')}`;
+}

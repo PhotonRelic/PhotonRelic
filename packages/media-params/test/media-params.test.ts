@@ -5,6 +5,8 @@ import {
   menuFromLists,
   negotiateFormat,
   parseMediaParams,
+  USAGE_INDEX_MAX_BYTES,
+  usageIndex,
 } from '../src/index.js';
 
 const u = (q: string) => new URL(`https://img.example.com/media/a/b.jpg${q}`);
@@ -80,5 +82,19 @@ describe('mediaUrl', () => {
     expect(
       mediaUrl('https://img.example.com', 'media/c.jpg', { w: 320, ar: '1:1', f: 'webp' }),
     ).toBe('https://img.example.com/media/c.jpg?w=320&ar=1%3A1&f=webp');
+  });
+});
+
+describe('usageIndex', () => {
+  it('is the key itself when it fits, a marked stable hash otherwise', () => {
+    expect(usageIndex('media/products/chair.jpg')).toBe('media/products/chair.jpg');
+    const fits = `media/${'a'.repeat(USAGE_INDEX_MAX_BYTES - 10)}.jpg`;
+    expect(usageIndex(fits)).toBe(fits);
+    const long = `media/${'a'.repeat(200)}.jpg`;
+    expect(usageIndex(long)).toMatch(/^#[0-9a-f]{16}$/);
+    expect(usageIndex(long)).toBe(usageIndex(long));
+    expect(usageIndex(long)).not.toBe(usageIndex(`${long.slice(0, -4)}-2.jpg`));
+    // Bytes, not characters: a multi-byte name over the cap is hashed too.
+    expect(usageIndex(`media/${'é'.repeat(60)}.jpg`)).toMatch(/^#/);
   });
 });

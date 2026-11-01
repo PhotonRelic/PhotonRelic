@@ -7,12 +7,17 @@ import { createApp } from './app.js';
 import { embedPolicyFromVars } from './embed.js';
 import { CloudflareImageTransformer } from './images.js';
 import { parsePrefixes, R2MediaSource } from './source.js';
+import { AnalyticsEngineUsageSink } from './usage.js';
 
 export interface Env {
   /** The media bucket; read only. */
   MEDIA: R2Bucket;
   /** Cloudflare Images. Optional: without it, objects are served as stored. */
   IMAGES?: ImagesBinding;
+  /** The library's database. Optional: with it, a key whose rights have expired answers 410. */
+  DB?: D1Database;
+  /** Workers Analytics Engine, one point per image served. Optional: without it, nothing is counted. */
+  USAGE?: AnalyticsEngineDataset;
   /** Comma-separated key prefixes to serve, each ending in `/`. Default `media/`. */
   SERVED_PREFIXES?: string;
   /** Comma-separated widths for ?w=; unset keeps the default menu. */
@@ -37,6 +42,8 @@ export default {
         prefixes: parsePrefixes(env.SERVED_PREFIXES),
         menu: menuFromLists(env.MEDIA_WIDTHS, env.MEDIA_ASPECTS),
         embed: embedPolicyFromVars(env.ALLOWED_ORIGINS, env.ALLOW_EMPTY_REFERER),
+        db: env.DB ?? null,
+        usage: env.USAGE ? new AnalyticsEngineUsageSink(env.USAGE) : null,
       });
       apps.set(env, app);
     }

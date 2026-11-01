@@ -11,7 +11,7 @@ It has two Workers. You can use either one on its own.
 | Part | What it does |
 | --- | --- |
 | [`workers/resizer`](workers/resizer) | **Public.** Serves images from an R2 bucket at their own path and resizes them on request from a fixed menu (`?w=`, `?ar=`, `?f=`). Output is cached at the edge. Useful to anyone with images in R2, with or without the library. |
-| [`workers/library`](workers/library) | **Private, behind Access.** The media library: browse the bucket, upload a whole shoot from the browser, file images by subject, tags, alt text and credit, find duplicates, retire or delete files. Every write goes into an audit log. |
+| [`workers/library`](workers/library) | **Private, behind Access.** The media library: browse the bucket, upload a whole shoot from the browser, file images by subject, tags, alt text, credit and rights, find duplicates, see what is about to expire, retire or delete files. Every write goes into an audit log. |
 | [`packages/media-params`](packages/media-params) | The resize menu and URL builder, with no dependencies. Both Workers use it, and so can a site that builds image URLs. |
 | [`tools/prep-images.py`](tools/prep-images.py) | Prepares a shoot on your machine before upload: resizes it to fit the resizer's input cap, fixes the names and strips EXIF/GPS. |
 
@@ -28,6 +28,8 @@ GET /media/products/chair.jpg?w=320&ar=1:1&f=webp  320 × 320 cover crop, WebP
 - Only keys under `SERVED_PREFIXES` with an image extension are served. SVG is never served.
 - Resized output is cached at the edge for a day (`s-maxage=86400`). A source over the Images binding's 20 MB input cap, or a deployment without the binding, is served as stored with an `x-media-transform` header saying why.
 - By default any site can embed the images: every response carries `Access-Control-Allow-Origin: *` and `Cross-Origin-Resource-Policy: cross-origin`.
+- Given the library's database (a read-only `DB` binding, commented out in `wrangler.toml`), a key whose rights have expired (the library's **Expires** date has passed) answers `410 Gone` with code `EXPIRED` on a cache miss, before any transform. A copy already at the edge serves out its day; the 410 is not cached, so a new date takes effect at once. Without the binding, expiry only retires the file in the library and the resizer serves it as before.
+- With a Workers Analytics Engine binding `USAGE` (`[[analytics_engine_datasets]]`, dataset `photonrelic_usage`), every image served is counted: one data point per 200, indexed by the key, saying whether it went out as stored or resized, in which format, and whether the edge cache answered. Nothing is written for a 4xx or 5xx, and without the binding nothing is written at all. The library reads the dataset back; see [Usage](#usage).
 - To limit embedding to your own sites, set `ALLOWED_ORIGINS` to the hosts whose pages may use the images, e.g. `www.example.com, example.com, *.example.com, media-admin.example.com`. A request is judged by its `Origin` header, then its `Referer`; a page on any other host gets a 403, and allowed pages get their own origin back in `Access-Control-Allow-Origin`. `*.example.com` matches subdomains only, so list the bare domain too, and include the library's hostname or its thumbnails stop loading. Requests with neither header (a direct link, an email client, a privacy browser) are let through unless `ALLOW_EMPTY_REFERER = "false"`. This stops other websites hotlinking your images; it does not stop anyone downloading a file and hosting it themselves, since a public image URL has to be fetchable without a login. If you would rather not configure the Worker, a WAF custom rule on the resizer's hostname that blocks requests whose `Referer` is not one of your sites does the same job from the dashboard.
 
 ## The library
@@ -35,9 +37,36 @@ GET /media/products/chair.jpg?w=320&ar=1:1&f=webp  320 × 320 cover crop, WebP
 - **Bucket-first.** The bucket listing is the record of what exists. D1 only holds metadata about keys. Files put in the bucket some other way (the dashboard, `rclone`, another app) appear after a **Rescan** as *unfiled*.
 - **Upload.** Drop a folder or files. Each file is hashed in the browser and prechecked before any bytes move, so the library refuses duplicates, names that are already taken, bad names and files over the cap. Files then stream straight into R2, four at a time, under `<UPLOAD_PREFIX><subject>/<name>`. If the tab closes partway, drop the same folder again and only the missing files go up.
 - **Nothing is overwritten.** A key that already holds different bytes is refused. The only way to remove an object is the file page's **Delete**, and it needs a ticked confirmation.
-- **Filing.** Select tiles and file them in bulk: subject, add or remove tags, credit, and an alt-text pattern using `{name}` and `{subject}`. You see a preview before anything is applied.
+- **Filing.** Select tiles and file them in bulk: subject, add or remove tags, credit, licence, expiry, and an alt-text pattern using `{name}` and `{subject}`. You see a preview before anything is applied.
+- **Search.** The box in the header, or the Search tab, finds files by any word of their path, subject, tags, default alt text or credit; the last word matches as a prefix, so results appear as you type. Results can be narrowed by subject, by tag and by state (unfiled, filed, retired), each a link beside the results with its count, and filters work with no words at all: *unfiled* with no query is the unfiled queue, *retired* is everything retired. Matches are ranked by relevance (a hit in the subject or tags outranks one in the path); without a query the newest come first. Results are tiles like the Library's, so a page of them can be selected and filed in bulk. The index is an FTS5 table in D1 kept in step by triggers, and only files the library has seen are in it: something put in the bucket some other way is found after a Rescan, which also rebuilds the index.
+- **Rights.** A file page records a licence, a source URL (http or https), restrictions, and an expiry date (`YYYY-MM-DD`, the day the rights run out). The audit row for a save lists which fields changed.
+- **Expiring.** The Expiring view lists files already expired and files expiring within 30 days, soonest first, each with a Retire button; the Library page shows a count when there are any. Every night at 03:00 UTC a cron run (`[triggers]` in `wrangler.toml`) retires every file whose expiry date has passed, with the note `Expired <date>`, one audit row per file as `system:expiry` and one `library.expiry_run` row for the run; the run touches only files not yet retired, so repeating it changes nothing. **Run expiry now** on the Expiring view does the same at once, and its audit row names who asked. A retired object stays in the bucket; with the resizer's database binding its URL answers 410.
 - **Duplicates.** Keys with identical bytes (matched by R2 etag or SHA-256) are grouped. Keep one and retire the rest; retired objects keep serving.
 - **Access.** The Worker verifies the Cloudflare Access JWT itself on every request, so a misconfigured policy fails closed. Cross-site writes are refused.
+- **Usage.** With the resizer counting (above) and the library configured to read the counts, the file page shows hits over the last 7 and 30 days, Retire and Delete warn when the file was served last month, and **Unused** lists the files nothing has asked for in 90 days.
+
+### Usage
+
+The resizer writes one data point per image served to a Workers Analytics Engine dataset; the library reads
+it back through the engine's SQL API. Three things to configure on the library, all optional:
+
+| Variable | What |
+| --- | --- |
+| `CF_ACCOUNT_ID` | The account id (`provision.sh` fills it in from `CLOUDFLARE_ACCOUNT_ID`) |
+| `ANALYTICS_TOKEN` | A secret (`wrangler secret put ANALYTICS_TOKEN`): an API token with the one permission **Account → Account Analytics → Read**. `deploy.sh` puts it from `ANALYTICS_TOKEN` in `.env` when it is set there. The token turns the feature on. |
+| `USAGE_DATASET` | The dataset name, default `photonrelic_usage`; must match the resizer's binding |
+
+Two caveats, shown beside the numbers. Analytics Engine samples at high volume (per key, so a busy image is
+sampled and a quiet one is not), and the counts are `SUM(_sample_interval)`: estimates, exact while traffic
+is modest. And the engine keeps 90 days, so *unused* means not served in the last 90 days, never *never
+served*; a file newer than that has had little chance, and a page serving the image from its own cache, or a
+copy hosted elsewhere, is not counted. Counts appear within a few minutes of the requests.
+
+**Unused** (`/library/unused`) is the files the library knows and has not retired, minus the keys the engine
+saw any hit for in the last 90 days: one grouped query for the keys *with* hits, read in pages of 10,000,
+subtracted in the Worker, so a library of thousands of files costs a statement or two. The page is paged a
+hundred tiles at a time, oldest first; each tile opens its file page, where Retire and Delete are, and the
+selection bar files or tags them as anywhere else.
 
 ## Setup
 
@@ -78,7 +107,8 @@ a private repo with PhotonRelic as a submodule instead, and point `main`, `asset
    Storage, D1, Access: Apps and Policies, and Access: Organizations, Identity Providers, and Groups
    (account scope) plus Workers Routes and DNS (zone scope); the account id; and the email domains the
    library should let in. Enable R2 in the dashboard once, and Zero Trust if the account has none (the
-   script can create the organisation when `ACCESS_TEAM_NAME` is set and Access has been enabled).
+   script can create the organisation when `ACCESS_TEAM_NAME` is set and Access has been enabled). For
+   [usage](#usage), also a second token with Account Analytics Read only, as `ANALYTICS_TOKEN`.
 3. Provision. This creates the Access application (allowing the email domains, One-time PIN sign-in), the
    bucket and the database, and writes the team domain, Audience tag and database id into `library.toml`.
    It is idempotent; re-run it after changing the email domains and the policy is updated.
@@ -103,10 +133,12 @@ lists can also be previewed.
 | resizer | `MEDIA_WIDTHS`, `MEDIA_ASPECTS` | the menu above | Comma-separated overrides for the resize menu |
 | resizer | `ALLOWED_ORIGINS` | unset (any page) | Comma-separated hosts whose pages may embed images; `*.example.com` for subdomains |
 | resizer | `ALLOW_EMPTY_REFERER` | `true` | With `ALLOWED_ORIGINS`: let requests with no `Origin` or `Referer` through |
+| resizer | `DB` binding | unset | The library's D1 database, read only; with it, expired keys answer 410 |
 | library | `UPLOAD_PREFIX` | `media/` | Where uploads go |
 | library | `LIBRARY_PREFIXES` | `UPLOAD_PREFIX` | Comma-separated roots the library lists |
 | library | `MEDIA_ORIGIN` | unset | The resizer's origin. When unset, previews are streamed whole through the library. |
 | library | `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` | unset | The Cloudflare Access application |
+| library | `CF_ACCOUNT_ID`, `ANALYTICS_TOKEN` (secret), `USAGE_DATASET` | unset, unset, `photonrelic_usage` | Reading the resizer's usage dataset; see [Usage](#usage) |
 | library | `ENVIRONMENT` | `local` | Shown as a tag in the header unless it is `production` |
 
 ## Design

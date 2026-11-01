@@ -23,6 +23,7 @@ export function harness(overrides: Partial<AppDeps> = {}) {
     media,
     layout: layoutFromVars('media/', 'media/, legacy/'),
     mediaOrigin: 'https://img.example.com',
+    usage: null,
     environment: 'test',
     now: () => new Date('2026-10-30T12:00:00.000Z'),
     ...overrides,

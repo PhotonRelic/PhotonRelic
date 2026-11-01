@@ -1,5 +1,5 @@
 /** The audit log: every write, with the Access identity that made it. */
-import type { Db } from './db.js';
+import type { Db, DbStatement } from './db.js';
 
 export interface AuditEntry {
   id: number;
@@ -29,19 +29,27 @@ const fromRow = (r: Row): AuditEntry => {
   return { id: r.id, at: r.at, actor: r.actor, action: r.action, detail, ok: r.ok === 1 };
 };
 
-export async function logAction(
-  db: Db,
-  entry: { actor: string; action: string; detail?: Record<string, unknown>; ok?: boolean },
-): Promise<void> {
-  await db
+export interface AuditWrite {
+  actor: string;
+  action: string;
+  detail?: Record<string, unknown>;
+  ok?: boolean;
+}
+
+/** The insert for one entry, so a store can write its audit rows in the same batch as its change. */
+export function auditStatement(db: Db, entry: AuditWrite): DbStatement {
+  return db
     .prepare('INSERT INTO audit_log (actor, action, detail, ok) VALUES (?1, ?2, ?3, ?4)')
     .bind(
       entry.actor,
       entry.action,
       entry.detail ? JSON.stringify(entry.detail) : null,
       entry.ok === false ? 0 : 1,
-    )
-    .run();
+    );
+}
+
+export async function logAction(db: Db, entry: AuditWrite): Promise<void> {
+  await auditStatement(db, entry).run();
 }
 
 /** Newest first; `before` is an id for the next page. */

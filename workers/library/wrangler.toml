@@ -22,6 +22,11 @@ binding = "ASSETS"
 [observability]
 enabled = true
 
+# The expiry run: every night at 03:00 UTC, retire every file whose
+# `expires_at` has passed. The Expiring page has a button that runs it now.
+[triggers]
+crons = ["0 3 * * *"]
+
 [vars]
 ENVIRONMENT = "local"
 # Your Zero Trust team domain, e.g. "yourteam.cloudflareaccess.com".
@@ -37,6 +42,13 @@ UPLOAD_PREFIX = "media/"
 # Comma-separated prefixes the library lists. Must include UPLOAD_PREFIX, and
 # should match the resizer's SERVED_PREFIXES so every listed file can be shown.
 LIBRARY_PREFIXES = "media/"
+# Optional: hit counts per file and the Unused view, read from the Analytics
+# Engine dataset the resizer writes (its USAGE binding). Needs the account id
+# and, as a secret, an API token with Account Analytics Read:
+#   wrangler secret put ANALYTICS_TOKEN
+# The token turns it on; without it the file page says "not configured".
+# CF_ACCOUNT_ID = ""
+# USAGE_DATASET = "photonrelic_usage"
 
 [[d1_databases]]
 binding = "DB"

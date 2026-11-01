@@ -8,11 +8,40 @@ import {
   hostMatches,
   parseAllowedOrigins,
 } from '../src/embed.js';
+import { type ExpiryDb, isExpired } from '../src/expiry.js';
 import { type ImageTransformer, TransformFailed, type TransformOptions } from '../src/images.js';
 import { isServableKey, MemoryMediaSource, parsePrefixes } from '../src/source.js';
+import { AnalyticsEngineUsageSink, type UsagePoint, type UsageSink } from '../src/usage.js';
 
 /** The first bytes of a PNG, enough to be a distinct stored object. */
 const png = () => new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3]).buffer as ArrayBuffer;
+
+/** The library's `assets` table, reduced to key and expiry, answering the one query the resizer makes. */
+class FakeDb implements ExpiryDb {
+  readonly expiries = new Map<string, string | null>();
+  queries = 0;
+  failing = false;
+  prepare(_sql: string) {
+    return {
+      bind: (...values: unknown[]) => ({
+        first: async <T>(): Promise<T | null> => {
+          this.queries += 1;
+          if (this.failing) throw new Error('D1 is away');
+          const [key, today] = values as [string, string];
+          const expiresAt = this.expiries.get(key);
+          return expiresAt && expiresAt < today ? ({ gone: 1 } as T) : null;
+        },
+      }),
+    };
+  }
+}
+
+class FakeUsage implements UsageSink {
+  points: UsagePoint[] = [];
+  async record(point: UsagePoint) {
+    this.points.push(point);
+  }
+}
 
 class FakeImages implements ImageTransformer {
   calls: TransformOptions[] = [];
@@ -37,6 +66,8 @@ function harness(
     prefixes?: string[];
     menu?: typeof DEFAULT_MENU;
     embed?: EmbedPolicy | null;
+    db?: FakeDb;
+    usage?: boolean;
   } = {},
 ) {
   const source = new MemoryMediaSource();
@@ -45,16 +76,19 @@ function harness(
   source.put('private/secret.jpg', png(), 'image/jpeg');
   source.put('media/vector/logo.svg', png(), 'image/svg+xml');
   const images = new FakeImages();
+  const usage = new FakeUsage();
   const app = createApp({
     source,
     images: opts.images === false ? null : images,
     prefixes: opts.prefixes ?? ['media/'],
     menu: opts.menu ?? DEFAULT_MENU,
     embed: opts.embed ?? null,
+    db: opts.db ?? null,
+    usage: opts.usage === false ? null : usage,
   });
   const get = (path: string, headers: Record<string, string> = {}) =>
     app.request(`https://img.example.com${path}`, { headers });
-  return { source, images, get };
+  return { source, images, usage, get };
 }
 
 describe('served as stored', () => {
@@ -250,6 +284,53 @@ describe('embedding allowlist', () => {
   });
 });
 
+describe('rights expiry', () => {
+  const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+
+  it('answers 410 EXPIRED for an expired key, as stored or resized, before any transform', async () => {
+    const db = new FakeDb();
+    db.expiries.set('media/workshop/bench.jpg', yesterday);
+    const h = harness({ db });
+    const stored = await h.get('/media/workshop/bench.jpg');
+    expect(stored.status).toBe(410);
+    expect(((await stored.json()) as { error: { code: string } }).error.code).toBe('EXPIRED');
+    expect(stored.headers.get('cache-control')).toBe('no-store');
+    const resized = await h.get('/media/workshop/bench.jpg?w=320&f=webp');
+    expect(resized.status).toBe(410);
+    expect(h.images.calls).toHaveLength(0);
+  });
+
+  it('serves a key that expires today or later, or has no row', async () => {
+    const db = new FakeDb();
+    db.expiries.set('media/workshop/bench.jpg', tomorrow);
+    db.expiries.set('media/products/Chair-01ABC.PNG', null);
+    const h = harness({ db });
+    expect((await h.get('/media/workshop/bench.jpg')).status).toBe(200);
+    expect((await h.get('/media/workshop/bench.jpg?w=320')).status).toBe(200);
+    expect((await h.get('/media/products/Chair-01ABC.PNG')).status).toBe(200);
+    expect((await h.get('/media/missing.jpg')).status).toBe(404);
+    expect(db.queries).toBe(4);
+  });
+
+  it('is not consulted without the binding, and fails open when the database errors', async () => {
+    const h = harness();
+    expect((await h.get('/media/workshop/bench.jpg')).status).toBe(200);
+    const db = new FakeDb();
+    db.expiries.set('media/workshop/bench.jpg', yesterday);
+    db.failing = true;
+    expect((await harness({ db }).get('/media/workshop/bench.jpg')).status).toBe(200);
+  });
+
+  it('compares the date as text against the day given', async () => {
+    const db = new FakeDb();
+    db.expiries.set('media/a.jpg', '2026-10-29');
+    expect(await isExpired(db, 'media/a.jpg', '2026-10-30')).toBe(true);
+    expect(await isExpired(db, 'media/a.jpg', '2026-10-29')).toBe(false);
+    expect(await isExpired(db, 'media/b.jpg', '2026-10-30')).toBe(false);
+  });
+});
+
 describe('configuration', () => {
   it('parses served prefixes and refuses malformed ones', () => {
     expect(parsePrefixes(undefined)).toEqual(['media/']);
@@ -264,5 +345,118 @@ describe('configuration', () => {
     expect(isServableKey('media/a//b.jpg', ['media/'])).toBe(false);
     expect(isServableKey('media/a/b.html', ['media/'])).toBe(false);
     expect(isServableKey('mediax/b.jpg', ['media/'])).toBe(false);
+  });
+});
+
+describe('usage', () => {
+  it('counts a stored object and a transform, each with what went out', async () => {
+    const h = harness();
+    expect((await h.get('/media/workshop/bench.jpg')).status).toBe(200);
+    expect((await h.get('/media/workshop/bench.jpg?w=768&f=webp')).status).toBe(200);
+    expect(h.usage.points).toEqual([
+      {
+        key: 'media/workshop/bench.jpg',
+        kind: 'stored',
+        format: 'image/jpeg',
+        cache: 'miss',
+        bytes: png().byteLength,
+      },
+      {
+        key: 'media/workshop/bench.jpg',
+        kind: 'transform',
+        format: 'webp',
+        cache: 'miss',
+        bytes: 'resized:768xauto:scale-down'.length,
+      },
+    ]);
+  });
+
+  it('counts a transform served as stored as what it was', async () => {
+    const h = harness({ images: false });
+    await h.get('/media/workshop/bench.jpg?w=320');
+    expect(h.usage.points[0]).toMatchObject({ kind: 'stored', format: 'image/jpeg' });
+  });
+
+  it('counts nothing for a 404, a 400, a 403 or a 502', async () => {
+    const h = harness({ embed: { allowed: ['www.example.com'], allowEmptyReferer: true } });
+    expect((await h.get('/media/missing.jpg')).status).toBe(404);
+    expect((await h.get('/media/workshop/bench.jpg?w=999')).status).toBe(400);
+    expect(
+      (await h.get('/media/workshop/bench.jpg', { referer: 'https://evil.example.net/' })).status,
+    ).toBe(403);
+    h.images.failures = 2;
+    expect((await h.get('/media/workshop/bench.jpg?w=480')).status).toBe(502);
+    expect(h.usage.points).toHaveLength(0);
+  });
+
+  it('serves as before without a sink', async () => {
+    const h = harness({ usage: false });
+    expect((await h.get('/media/workshop/bench.jpg')).status).toBe(200);
+    expect((await h.get('/media/workshop/bench.jpg?w=320')).status).toBe(200);
+  });
+
+  it('counts an edge cache hit from the cached headers', async () => {
+    const h = harness();
+    const cached = new Map<string, Response>();
+    const fakeCaches = {
+      default: {
+        match: async (req: Request) => cached.get(req.url)?.clone(),
+        put: async (req: Request, res: Response) => {
+          cached.set(req.url, res);
+        },
+      },
+    };
+    const g = globalThis as { caches?: unknown };
+    g.caches = fakeCaches;
+    try {
+      await h.get('/media/workshop/bench.jpg?w=320&f=webp');
+      await h.get('/media/workshop/bench.jpg?w=320&f=webp');
+      await h.get('/media/workshop/bench.jpg');
+      await h.get('/media/workshop/bench.jpg');
+    } finally {
+      g.caches = undefined;
+    }
+    expect(h.images.calls).toHaveLength(1);
+    expect(h.usage.points.map((p) => `${p.kind}:${p.format}:${p.cache}:${p.bytes}`)).toEqual([
+      'transform:webp:miss:27',
+      'transform:webp:hit:27',
+      'stored:image/jpeg:miss:11',
+      'stored:image/jpeg:hit:11',
+    ]);
+  });
+
+  it('writes one data point per hit to the binding, indexed by the key', async () => {
+    const written: unknown[] = [];
+    const sink = new AnalyticsEngineUsageSink({
+      writeDataPoint: (event: unknown) => {
+        written.push(event);
+      },
+    } as AnalyticsEngineDataset);
+    await sink.record({
+      key: 'media/a.jpg',
+      kind: 'transform',
+      format: 'avif',
+      cache: 'miss',
+      bytes: 1234,
+    });
+    await sink.record({
+      key: 'media/b.jpg',
+      kind: 'stored',
+      format: 'image/png',
+      cache: 'hit',
+      bytes: null,
+    });
+    expect(written).toEqual([
+      {
+        indexes: ['media/a.jpg'],
+        blobs: ['media/a.jpg', 'transform', 'avif', 'miss'],
+        doubles: [1, 1234],
+      },
+      {
+        indexes: ['media/b.jpg'],
+        blobs: ['media/b.jpg', 'stored', 'image/png', 'hit'],
+        doubles: [1],
+      },
+    ]);
   });
 });

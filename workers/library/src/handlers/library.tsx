@@ -1,9 +1,9 @@
 /**
  * The media library's pages and writes, mounted under /library: the
  * bucket-first browser, one file, bulk filing, the upload page with its
- * precheck and streamed PUT, duplicates, the unfiled queue, Rescan, and the
- * one door that removes an object: the file page's Delete, confirmed by the
- * person pressing it.
+ * precheck and streamed PUT, duplicates, the unfiled queue, the expiring
+ * view with its run-now control, Rescan, and the one door that removes an
+ * object: the file page's Delete, confirmed by the person pressing it.
  */
 import { Hono } from 'hono';
 import { type LibraryContext, page } from '../app.jsx';
@@ -11,14 +11,20 @@ import { logAction } from '../audit.js';
 import { type AppDeps, previewUrl, publicUrl } from '../deps.js';
 import { redirectWith } from '../flash.js';
 import {
+  type Asset,
+  checkRights,
   countDuplicateKeys,
+  countExpiring,
   countUnfiled,
   fileAssets,
   forgetAsset,
   getAsset,
   getAssets,
   IMAGE_KEY,
+  isoDate,
+  listActive,
   listDuplicates,
+  listExpiring,
   listUnfiled,
   type PrecheckEntry,
   parseTags,
@@ -26,6 +32,11 @@ import {
   recordUpload,
   rescan,
   retireAsset,
+  retireExpired,
+  SEARCH_STATES,
+  type SearchFilters,
+  searchAssets,
+  searchFacets,
   TOO_BIG,
 } from '../library.js';
 import {
@@ -37,21 +48,33 @@ import {
   UPLOAD_SOURCE_TAG,
   uploadKeyPattern,
 } from '../media.js';
+import { USAGE_RETENTION_DAYS } from '../usage.js';
 import {
   BrowsePage,
   type BulkPreview,
   BulkPreviewPage,
   DuplicatesPage,
+  ExpiringPage,
   FilePage,
   type LibraryStats,
   type Preview,
+  SearchPage,
   type Tile,
   UnfiledPage,
+  UnusedPage,
   UploadPage,
+  type UsageStatus,
 } from '../views/library.jsx';
+
+/** Unused files to a page; the whole set is computed, this is how much is shown at once. */
+const UNUSED_PAGE = 100;
 
 const SAFE_BACK = /^\/library(?:[/?#][^\s]*)?$/;
 const NO_STORE = 'No media bucket is bound to this Worker.';
+/** Tiles to a page of search results. */
+const SEARCH_PAGE = 60;
+/** Longer than any query a person types; keeps a pasted blob out of the index's parser. */
+const SEARCH_QUERY_MAX = 200;
 
 export function libraryRoutes(deps: AppDeps) {
   const app = new Hono<LibraryContext>();
@@ -72,6 +95,29 @@ export function libraryRoutes(deps: AppDeps) {
   const folderOf = (key: string) =>
     `/library?prefix=${encodeURIComponent(key.slice(0, key.lastIndexOf('/') + 1))}`;
   const cleanSubject = (s: string) => s.trim().replace(/^\/+|\/+$/g, '');
+  /** The calendar date expiry is judged against, from the deps' clock. */
+  const today = () => isoDate(deps.now());
+
+  /** What a save changed, by field, for the audit row. */
+  const EDITABLE = [
+    'subject',
+    'tags',
+    'alt_default',
+    'credit',
+    'licence',
+    'source_url',
+    'restrictions',
+    'expires_at',
+  ] as const;
+  function changedFields(before: Asset | null, after: Asset | null): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    for (const f of EDITABLE) {
+      const was = before?.[f] ?? null;
+      const now = after?.[f] ?? null;
+      if (JSON.stringify(was) !== JSON.stringify(now)) out[f] = now;
+    }
+    return out;
+  }
 
   /** A prefix the library lists: '' (the roots) or under one of the roots, no traversal. */
   function libraryPrefix(requested: string | undefined): string | null {
@@ -91,11 +137,25 @@ export function libraryRoutes(deps: AppDeps) {
   }
 
   async function stats(): Promise<LibraryStats> {
-    const [unfiled, duplicateKeys] = await Promise.all([
+    const [unfiled, duplicateKeys, expiring] = await Promise.all([
       countUnfiled(deps.db),
       countDuplicateKeys(deps.db),
+      countExpiring(deps.db, today()),
     ]);
-    return { unfiled, duplicateKeys };
+    return { unfiled, duplicateKeys, expiring };
+  }
+
+  /** One key's hit counts for the file page. The engine being down costs a line, not the page. */
+  async function usageOf(key: string): Promise<UsageStatus> {
+    if (!deps.usage) return { state: 'off' };
+    try {
+      const counts = (await deps.usage.usageFor([key])).get(key) ?? { d7: 0, d30: 0 };
+      return { state: 'ok', counts };
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      console.error(JSON.stringify({ msg: 'usage lookup failed', key, error: message }));
+      return { state: 'error', message };
+    }
   }
 
   // Browse ----------------------------------------------------------------
@@ -140,6 +200,43 @@ export function libraryRoutes(deps: AppDeps) {
     );
   });
 
+  // Search -----------------------------------------------------------------
+  // Over the rows the library knows, so a file dropped in the bucket outside the
+  // library is found once a Rescan has noted it. Reads nothing from the bucket.
+  app.get('/search', async (c) => {
+    const requested = c.req.query('state');
+    const filters: SearchFilters = {
+      q: (c.req.query('q') ?? '').trim().slice(0, SEARCH_QUERY_MAX),
+      subject: cleanSubject(c.req.query('subject') ?? '') || null,
+      tag: parseTags(c.req.query('tag') ?? '')[0] ?? null,
+      state: SEARCH_STATES.find((s) => s === requested) ?? 'all',
+    };
+    const pageNo = Math.max(1, Math.floor(Number(c.req.query('page')) || 1));
+    const [found, facets] = await Promise.all([
+      searchAssets(deps.db, filters, SEARCH_PAGE, (pageNo - 1) * SEARCH_PAGE),
+      searchFacets(deps.db, filters),
+    ]);
+    // The grid wants a listing entry per tile; the row has what the listing would say.
+    const tiles: Tile[] = found.assets.map((a) => ({
+      object: { key: a.key, size: a.bytes ?? 0, uploaded: a.first_seen, etag: a.etag },
+      asset: a,
+    }));
+    return page(
+      c,
+      deps,
+      filters.q ? `Search: ${filters.q}` : 'Search',
+      <SearchPage
+        filters={filters}
+        page={pageNo}
+        pageSize={SEARCH_PAGE}
+        total={found.total}
+        tiles={tiles}
+        facets={facets}
+        preview={preview}
+      />,
+    );
+  });
+
   /** The original object, streamed through this Worker: previews when no resizer is configured. */
   app.get('/raw', async (c) => {
     const key = c.req.query('key') ?? '';
@@ -155,9 +252,10 @@ export function libraryRoutes(deps: AppDeps) {
   app.get('/file', async (c) => {
     const key = c.req.query('key') ?? '';
     if (!isLibraryKey(layout, key)) return redirectWith(c, '/library', 'error', 'No such key.');
-    const [head, asset] = await Promise.all([
+    const [head, asset, usage] = await Promise.all([
       deps.media ? deps.media.head(key) : Promise.resolve(null),
       getAsset(deps.db, key),
+      usageOf(key),
     ]);
     return page(
       c,
@@ -170,6 +268,8 @@ export function libraryRoutes(deps: AppDeps) {
         preview={preview}
         publicUrl={publicUrl(deps, key)}
         hasStore={Boolean(deps.media)}
+        today={today()}
+        usage={usage}
       />,
     );
   });
@@ -180,6 +280,13 @@ export function libraryRoutes(deps: AppDeps) {
     if (!isLibraryKey(layout, key) || !IMAGE_KEY.test(key))
       return redirectWith(c, '/library', 'error', 'No such key.');
     const tags = parseTags(str(f, 'tags'));
+    const rights = checkRights({
+      licence: str(f, 'licence'),
+      sourceUrl: str(f, 'source_url'),
+      restrictions: str(f, 'restrictions'),
+      expiresAt: str(f, 'expires_at'),
+    });
+    if (!rights.ok) return redirectWith(c, fileBack(key), 'error', `Not saved. ${rights.error}`);
     const current = await getAsset(deps.db, key);
     await fileAssets(
       deps.db,
@@ -191,11 +298,16 @@ export function libraryRoutes(deps: AppDeps) {
         removeTags: (current?.tags ?? []).filter((t) => !tags.includes(t)),
         credit: str(f, 'credit').trim(),
         altDefault: str(f, 'alt_default').trim(),
+        ...rights.rights,
       },
       actor(c),
       deps.now(),
     );
-    await logAction(deps.db, { actor: actor(c), action: 'library.filed', detail: { keys: [key] } });
+    await logAction(deps.db, {
+      actor: actor(c),
+      action: 'library.filed',
+      detail: { keys: [key], changed: changedFields(current, await getAsset(deps.db, key)) },
+    });
     return redirectWith(c, fileBack(key), 'success', 'Saved.');
   });
 
@@ -212,9 +324,10 @@ export function libraryRoutes(deps: AppDeps) {
       action: retired ? 'library.retired' : 'library.unretired',
       detail: { key, note },
     });
+    // The Expiring view retires from its rows and wants to stay there.
     return redirectWith(
       c,
-      fileBack(key),
+      backOf(str(f, 'back', fileBack(key))),
       'success',
       retired ? 'Retired. The object stays in the bucket.' : 'Back in use.',
     );
@@ -270,9 +383,17 @@ export function libraryRoutes(deps: AppDeps) {
       removeTags: parseTags(str(f, 'remove_tags')),
       credit: opt('credit'),
       altPattern: opt('alt_pattern'),
+      licence: opt('licence'),
+      expiresAt: opt('expires_at'),
       back: backOf(str(f, 'back', '/library')),
     };
   }
+
+  /** The bulk bar's rights fields, checked the same way as the file page's; a message when one is off. */
+  const bulkRightsError = (p: BulkPreview): string | null => {
+    const r = checkRights({ licence: p.licence ?? '', expiresAt: p.expiresAt ?? '' });
+    return r.ok ? null : r.error;
+  };
 
   app.post('/bulk', async (c) => {
     const preview = previewFrom(await c.req.parseBody({ all: true }));
@@ -283,14 +404,21 @@ export function libraryRoutes(deps: AppDeps) {
       preview.addTags.length === 0 &&
       preview.removeTags.length === 0 &&
       preview.credit === undefined &&
-      preview.altPattern === undefined
+      preview.altPattern === undefined &&
+      preview.licence === undefined &&
+      preview.expiresAt === undefined
     )
       return redirectWith(c, preview.back, 'warning', 'Nothing to change: fill in the bar first.');
+    const problem = bulkRightsError(preview);
+    if (problem) return redirectWith(c, preview.back, 'error', problem);
     return page(c, deps, 'File images', <BulkPreviewPage preview={preview} layout={layout} />);
   });
 
   app.post('/bulk/apply', async (c) => {
     const preview = previewFrom(await c.req.parseBody({ all: true }));
+    // The preview checked these, but the apply is its own request.
+    const problem = bulkRightsError(preview);
+    if (problem) return redirectWith(c, preview.back, 'error', problem);
     const n = await fileAssets(
       deps.db,
       layout,
@@ -301,6 +429,8 @@ export function libraryRoutes(deps: AppDeps) {
         removeTags: preview.removeTags,
         credit: preview.credit,
         altPattern: preview.altPattern,
+        licence: preview.licence,
+        expiresAt: preview.expiresAt,
       },
       actor(c),
       deps.now(),
@@ -313,6 +443,9 @@ export function libraryRoutes(deps: AppDeps) {
         subject: preview.subject ?? null,
         addTags: preview.addTags,
         removeTags: preview.removeTags,
+        ...(preview.credit !== undefined ? { credit: preview.credit } : {}),
+        ...(preview.licence !== undefined ? { licence: preview.licence } : {}),
+        ...(preview.expiresAt !== undefined ? { expires_at: preview.expiresAt } : {}),
       },
     });
     return redirectWith(c, preview.back, 'success', `Filed ${n} file${n === 1 ? '' : 's'}.`);
@@ -325,6 +458,79 @@ export function libraryRoutes(deps: AppDeps) {
       rows.map((a) => ({ key: a.key, size: a.bytes ?? 0, uploaded: a.first_seen, etag: a.etag })),
     );
     return page(c, deps, 'Unfiled', <UnfiledPage tiles={tiles} preview={preview} total={total} />);
+  });
+
+  // Expiring ----------------------------------------------------------------
+  app.get('/expiring', async (c) => {
+    const day = today();
+    return page(
+      c,
+      deps,
+      'Expiring',
+      <ExpiringPage assets={await listExpiring(deps.db, day)} today={day} preview={preview} />,
+    );
+  });
+
+  /** The daily expiry run, now: what the cron would do at its next tick. */
+  app.post('/expiring/run', async (c) => {
+    const r = await retireExpired(deps.db, today(), actor(c));
+    const n = r.retired.length;
+    return redirectWith(
+      c,
+      '/library/expiring',
+      'success',
+      n === 0
+        ? `Expiry run: nothing had expired before ${r.today}.`
+        : `Expiry run: retired ${n} file${n === 1 ? '' : 's'} expired before ${r.today}.`,
+    );
+  });
+
+  // Unused ------------------------------------------------------------------
+  // The engine is asked for the keys WITH hits (one grouped list, paged) and
+  // the library subtracts; asking per key would be thousands of statements.
+  app.get('/unused', async (c) => {
+    const requested = Number(c.req.query('page') ?? '1');
+    const current = Number.isInteger(requested) && requested > 0 ? requested : 1;
+    let tiles: Tile[] = [];
+    let total = 0;
+    let status: 'off' | 'ok' | 'error' = 'off';
+    let message: string | null = null;
+    if (deps.usage) {
+      try {
+        const active = await listActive(deps.db);
+        const unused = new Set(
+          await deps.usage.unusedKeys(
+            active.map((a) => a.key),
+            USAGE_RETENTION_DAYS,
+          ),
+        );
+        const all = active.filter((a) => unused.has(a.key));
+        total = all.length;
+        tiles = all.slice((current - 1) * UNUSED_PAGE, current * UNUSED_PAGE).map((a) => ({
+          object: { key: a.key, size: a.bytes ?? 0, uploaded: a.first_seen, etag: a.etag },
+          asset: a,
+        }));
+        status = 'ok';
+      } catch (e) {
+        message = e instanceof Error ? e.message : String(e);
+        console.error(JSON.stringify({ msg: 'unused lookup failed', error: message }));
+        status = 'error';
+      }
+    }
+    return page(
+      c,
+      deps,
+      'Unused',
+      <UnusedPage
+        tiles={tiles}
+        preview={preview}
+        total={total}
+        page={current}
+        pages={Math.max(1, Math.ceil(total / UNUSED_PAGE))}
+        status={status}
+        message={message}
+      />,
+    );
   });
 
   // Rescan ------------------------------------------------------------------

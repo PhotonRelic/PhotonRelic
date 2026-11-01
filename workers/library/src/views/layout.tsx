@@ -61,6 +61,17 @@ export function Layout(props: PageProps) {
             </li>
           </ul>
           <ul>
+            <li>
+              <form method="get" action="/library/search" class="nav-search">
+                <input
+                  type="search"
+                  name="q"
+                  placeholder="Search"
+                  aria-label="Search the library"
+                  autocomplete="off"
+                />
+              </form>
+            </li>
             {NAV.map((n) => (
               <li>
                 <a href={n.href} class={n.href === active ? 'active' : undefined}>

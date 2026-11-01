@@ -1,11 +1,17 @@
 /**
  * The media library pages: the bucket-first browser with selection and the
  * bulk bar, one file, the upload page (with the rclone procedure beside the
- * drop zone), the bulk filing preview, the duplicates view and the unfiled
- * queue.
+ * drop zone), the bulk filing preview, the duplicates view, the unfiled
+ * queue, the expiring view and the unused list.
  */
-import type { Asset, DuplicateGroup } from '../library.js';
-import { altFromPattern } from '../library.js';
+import type {
+  Asset,
+  DuplicateGroup,
+  SearchFacets,
+  SearchFilters,
+  SearchState,
+} from '../library.js';
+import { altFromPattern, EXPIRING_DAYS, RIGHTS_MAX, SEARCH_STATES } from '../library.js';
 import {
   basenameOf,
   type MediaLayout,
@@ -13,19 +19,30 @@ import {
   UPLOAD_MAX_BYTES,
   UPLOAD_MAX_LABEL,
 } from '../media.js';
+import { USAGE_RETENTION_DAYS, type UsageCounts } from '../usage.js';
 import { kb, when } from './layout.js';
 
 /** How a page builds an image URL for a key; the handler binds it to the deps. */
 export type Preview = (key: string, width?: number) => string;
 
-export type LibraryTab = 'library' | 'upload' | 'unfiled' | 'duplicates';
+export type LibraryTab =
+  | 'library'
+  | 'search'
+  | 'upload'
+  | 'unfiled'
+  | 'duplicates'
+  | 'expiring'
+  | 'unused';
 
 export function Tabs({ active }: { active: LibraryTab }) {
   const items: [LibraryTab, string, string][] = [
     ['library', '/library', 'Library'],
+    ['search', '/library/search', 'Search'],
     ['upload', '/library/upload', 'Upload'],
     ['unfiled', '/library/unfiled', 'Unfiled'],
     ['duplicates', '/library/duplicates', 'Duplicates'],
+    ['expiring', '/library/expiring', 'Expiring'],
+    ['unused', '/library/unused', 'Unused'],
   ];
   return (
     <nav class="tabs" aria-label="Library">
@@ -85,6 +102,8 @@ export function sourceLabel(asset: Asset | undefined): string {
 export interface LibraryStats {
   unfiled: number;
   duplicateKeys: number;
+  /** Expired or expiring within EXPIRING_DAYS, not yet retired. */
+  expiring: number;
 }
 
 export function StatsRow({ stats }: { stats: LibraryStats }) {
@@ -98,8 +117,33 @@ export function StatsRow({ stats }: { stats: LibraryStats }) {
     <div class="stat-grid">
       {card(stats.unfiled, 'Unfiled files', '/library/unfiled')}
       {card(stats.duplicateKeys, 'Keys in duplicate groups', '/library/duplicates')}
+      {/* Most libraries never set an expiry; the card appears when there is something to see. */}
+      {stats.expiring ? card(stats.expiring, 'Expiring or expired', '/library/expiring') : null}
     </div>
   );
+}
+
+/** Whole days from `today` to `date`; negative once it has passed. */
+export const daysUntil = (date: string, today: string): number =>
+  Math.round((Date.parse(`${date}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000);
+
+/** The expiry chip for a file: `expired` once the date has passed, `expiring` within the window. */
+export function ExpiryChip({ expiresAt, today }: { expiresAt: string | null; today: string }) {
+  if (!expiresAt) return null;
+  const days = daysUntil(expiresAt, today);
+  if (days < 0)
+    return (
+      <mark class="chip chip-retired" title={`Expired ${expiresAt}`}>
+        expired
+      </mark>
+    );
+  if (days <= EXPIRING_DAYS)
+    return (
+      <mark class="chip chip-unfiled" title={`Expires ${expiresAt}`}>
+        {days === 0 ? 'expires today' : `expires in ${days} day${days === 1 ? '' : 's'}`}
+      </mark>
+    );
+  return null;
 }
 
 export interface Tile {
@@ -191,6 +235,23 @@ export function BulkBar({ back }: { back: string }) {
             title="{name} is the file name's words, {subject} the subject folder's"
           />
         </label>
+        <label>
+          Licence
+          <input
+            type="text"
+            name="licence"
+            maxlength={RIGHTS_MAX.licence}
+            placeholder="CC BY 4.0 (blank leaves it)"
+          />
+        </label>
+        <label>
+          Expires
+          <input
+            type="date"
+            name="expires_at"
+            title="The day the rights run out; blank leaves it"
+          />
+        </label>
       </div>
       <p class="bulk-actions">
         <button type="submit" class="secondary slim">
@@ -205,17 +266,190 @@ function SelectionForm({
   back,
   tiles,
   preview,
+  filter = true,
 }: {
   back: string;
   tiles: Tile[];
   preview: Preview;
+  /** The in-page filter box; off where the page is itself a search. */
+  filter?: boolean;
 }) {
   return (
     <form method="post" action="/library/bulk" x-data="{ q: '' }" class="selection-form">
-      <input type="search" placeholder="Filter by path, tag or alt text…" x-model="q" />
+      {filter ? (
+        <input type="search" placeholder="Filter by path, tag or alt text…" x-model="q" />
+      ) : null}
       <BulkBar back={back} />
       <TileGrid tiles={tiles} preview={preview} />
     </form>
+  );
+}
+
+/** The results page for a search; page 1 and the defaults are left out of the URL. */
+export function searchHref(f: SearchFilters, page = 1): string {
+  const params = new URLSearchParams();
+  if (f.q) params.set('q', f.q);
+  if (f.subject !== null) params.set('subject', f.subject);
+  if (f.tag !== null) params.set('tag', f.tag);
+  if (f.state !== 'all') params.set('state', f.state);
+  if (page > 1) params.set('page', String(page));
+  const qs = params.toString();
+  return qs ? `/library/search?${qs}` : '/library/search';
+}
+
+/** One row of filter values as links: the chosen one links to its own removal. */
+function FacetRow({
+  label,
+  items,
+  current,
+  hrefFor,
+}: {
+  label: string;
+  items: { value: string; n?: number }[];
+  current: string | null;
+  hrefFor: (value: string | null) => string;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <p class="facet-row">
+      <span class="facet-label">{label}</span>
+      {items.map(({ value, n }) => {
+        const chosen = value === current;
+        return (
+          <a
+            href={hrefFor(chosen ? null : value)}
+            class={`facet${chosen ? ' active' : ''}`}
+            title={chosen ? `Stop filtering by ${value}` : `Only ${value}`}
+          >
+            {value}
+            {n === undefined ? null : <span class="n">{n}</span>}
+            {chosen ? <span class="facet-x">×</span> : null}
+          </a>
+        );
+      })}
+    </p>
+  );
+}
+
+export function SearchPage({
+  filters,
+  page,
+  pageSize,
+  total,
+  tiles,
+  facets,
+  preview,
+}: {
+  filters: SearchFilters;
+  page: number;
+  pageSize: number;
+  total: number;
+  tiles: Tile[];
+  facets: SearchFacets;
+  preview: Preview;
+}) {
+  const self = searchHref(filters, page);
+  const narrowed =
+    filters.q !== '' || filters.subject !== null || filters.tag !== null || filters.state !== 'all';
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  const first = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const last = Math.min(total, page * pageSize);
+  const states: { value: SearchState }[] = SEARCH_STATES.map((value) => ({ value }));
+  return (
+    <>
+      <Tabs active="search" />
+      <PageHead title="Search">
+        <RescanButton />
+      </PageHead>
+      <p>
+        <small class="muted">
+          Searches what the library knows about each file: its path, subject, tags, default alt text
+          and credit. Only files the library has seen are found, so a file put in the bucket some
+          other way appears here after a Rescan has noted it. Select tiles to file the results in
+          bulk, as in the Library.
+        </small>
+      </p>
+      <form method="get" action="/library/search" class="filter-bar search-bar">
+        <input
+          type="search"
+          name="q"
+          value={filters.q}
+          placeholder="Words from the path, tags, alt text or credit…"
+          aria-label="Search the library"
+          autofocus
+        />
+        {filters.subject !== null ? (
+          <input type="hidden" name="subject" value={filters.subject} />
+        ) : null}
+        {filters.tag !== null ? <input type="hidden" name="tag" value={filters.tag} /> : null}
+        {filters.state !== 'all' ? (
+          <input type="hidden" name="state" value={filters.state} />
+        ) : null}
+        <button type="submit" class="secondary slim">
+          Search
+        </button>
+        {narrowed ? (
+          <a href="/library/search" role="button" class="outline slim">
+            Clear
+          </a>
+        ) : null}
+      </form>
+      <FacetRow
+        label="State"
+        items={states}
+        current={filters.state}
+        hrefFor={(v) => searchHref({ ...filters, state: (v as SearchState | null) ?? 'all' })}
+      />
+      <FacetRow
+        label="Subject"
+        items={facets.subjects}
+        current={filters.subject}
+        hrefFor={(v) => searchHref({ ...filters, subject: v })}
+      />
+      <FacetRow
+        label="Tags"
+        items={facets.tags}
+        current={filters.tag}
+        hrefFor={(v) => searchHref({ ...filters, tag: v })}
+      />
+      <p class="search-count">
+        <span class="n">{total}</span> {total === 1 ? 'file' : 'files'}{' '}
+        {!narrowed ? 'known to the library' : total === 1 ? 'matches' : 'match'}
+        {total > pageSize ? (
+          <>
+            , showing <span class="n">{first}</span>–<span class="n">{last}</span>
+          </>
+        ) : null}
+      </p>
+      {tiles.length ? (
+        <SelectionForm back={self} tiles={tiles} preview={preview} filter={false} />
+      ) : (
+        <p>
+          <small class="muted">
+            {narrowed
+              ? 'Nothing matches. Try fewer words, clear a filter, or Rescan if the file was added to the bucket outside the library.'
+              : 'The library has not seen any files yet. Upload a shoot or Rescan the bucket.'}
+          </small>
+        </p>
+      )}
+      {pages > 1 ? (
+        <p class="pager">
+          {page > 1 ? (
+            <a href={searchHref(filters, page - 1)} role="button" class="outline slim">
+              Previous
+            </a>
+          ) : null}
+          <span class="muted">
+            page <span class="n">{page}</span> of <span class="n">{pages}</span>
+          </span>
+          {page < pages ? (
+            <a href={searchHref(filters, page + 1)} role="button" class="outline slim">
+              Next
+            </a>
+          ) : null}
+        </p>
+      ) : null}
+    </>
   );
 }
 
@@ -331,6 +565,135 @@ export function UnfiledPage({
   );
 }
 
+export function UnusedPage({
+  tiles,
+  preview,
+  total,
+  page,
+  pages,
+  status,
+  message,
+}: {
+  tiles: Tile[];
+  preview: Preview;
+  total: number;
+  page: number;
+  pages: number;
+  status: 'off' | 'ok' | 'error';
+  message: string | null;
+}) {
+  const self = `/library/unused?page=${page}`;
+  return (
+    <>
+      <Tabs active="unused" />
+      <PageHead title="Unused" />
+      <p>
+        <small class="muted">
+          Files the library knows, not retired, that the resizer has not served in the last{' '}
+          {USAGE_RETENTION_DAYS} days, as far as its usage dataset can tell: it keeps{' '}
+          {USAGE_RETENTION_DAYS} days and samples at high volume. A file newer than that has had
+          little chance to be used (First seen is on its file page), and a file served from a page's
+          own cache, or copied elsewhere, is not counted. Oldest first. Open a file to retire or
+          delete it; select files to tag them.
+        </small>
+      </p>
+      {status === 'off' ? (
+        <article class="flash flash-info">
+          Usage is not configured. Bind <code>USAGE</code> in the resizer and set{' '}
+          <code>CF_ACCOUNT_ID</code> and <code>ANALYTICS_TOKEN</code> here.
+        </article>
+      ) : status === 'error' ? (
+        <article class="flash flash-error">Could not read the usage dataset: {message}</article>
+      ) : tiles.length === 0 ? (
+        <p>Every file the library knows has been served in the last {USAGE_RETENTION_DAYS} days.</p>
+      ) : (
+        <>
+          <p>
+            <small class="muted">
+              {total} unused, page {page} of {pages}.
+            </small>
+          </p>
+          <SelectionForm back={self} tiles={tiles} preview={preview} />
+          {pages > 1 ? (
+            <p class="bulk-actions">
+              {page > 1 ? (
+                <a href={`/library/unused?page=${page - 1}`} role="button" class="outline">
+                  Previous
+                </a>
+              ) : null}
+              {page < pages ? (
+                <a href={`/library/unused?page=${page + 1}`} role="button" class="outline">
+                  More
+                </a>
+              ) : null}
+            </p>
+          ) : null}
+        </>
+      )}
+    </>
+  );
+}
+
+/** What the file page knows about a key's hits: nothing configured, the counts, or why not. */
+export type UsageStatus =
+  | { state: 'off' }
+  | { state: 'ok'; counts: UsageCounts }
+  | { state: 'error'; message: string };
+
+export const USAGE_CAVEAT =
+  'Estimates from the resizer: sampled at high volume, kept for 90 days. Cached copies count; a page that loads the image from its own cache does not.';
+
+/** The file page's hit counts; the handler fetched them from the engine. */
+export function UsageBlock({ usage }: { usage: UsageStatus }) {
+  return (
+    <section class="usage-block">
+      <h4>Usage</h4>
+      {usage.state === 'off' ? (
+        <p>
+          <small class="muted">
+            Not configured. Bind <code>USAGE</code> in the resizer and set{' '}
+            <code>CF_ACCOUNT_ID</code> and <code>ANALYTICS_TOKEN</code> here to count hits.
+          </small>
+        </p>
+      ) : usage.state === 'error' ? (
+        <p>
+          <small class="muted">Usage unavailable: {usage.message}</small>
+        </p>
+      ) : (
+        <>
+          <div class="usage-row">
+            <div class="usage-stat">
+              <span class="stat-value">{usage.counts.d7}</span>
+              <span class="stat-label">hits, 7 days</span>
+            </div>
+            <div class="usage-stat">
+              <span class="stat-value">{usage.counts.d30}</span>
+              <span class="stat-label">hits, 30 days</span>
+            </div>
+          </div>
+          <p>
+            <small class="muted">{USAGE_CAVEAT}</small>
+          </p>
+        </>
+      )}
+    </section>
+  );
+}
+
+/** Before retiring or deleting: a file something asked for last month is still in use. */
+function InUseWarning({ usage, verb }: { usage: UsageStatus; verb: 'Retiring' | 'Deleting' }) {
+  if (usage.state !== 'ok' || usage.counts.d30 <= 0) return null;
+  return (
+    <article class="flash flash-warning">
+      Served <span class="n">{usage.counts.d30}</span> time{usage.counts.d30 === 1 ? '' : 's'} in
+      the last 30 days (an estimate): something still uses this file.{' '}
+      {verb === 'Deleting'
+        ? 'Deleting it breaks those pages.'
+        : 'Retiring keeps it serving, but check what links to it before deleting.'}
+    </article>
+  );
+}
+
 export function FilePage({
   objectKey: key,
   head,
@@ -338,6 +701,8 @@ export function FilePage({
   preview,
   publicUrl,
   hasStore,
+  today,
+  usage,
 }: {
   objectKey: string;
   head: { size: number; contentType: string; etag: string | null } | null;
@@ -345,6 +710,8 @@ export function FilePage({
   preview: Preview;
   publicUrl: string | null;
   hasStore: boolean;
+  today: string;
+  usage: UsageStatus;
 }) {
   const filing = filingLabel(asset ?? undefined);
   return (
@@ -416,6 +783,14 @@ export function FilePage({
                   {asset?.uploaded_by ? ` by ${asset.uploaded_by}` : ''}
                 </td>
               </tr>
+              {asset?.expires_at ? (
+                <tr>
+                  <td>Expires</td>
+                  <td class="num">
+                    {asset.expires_at} <ExpiryChip expiresAt={asset.expires_at} today={today} />
+                  </td>
+                </tr>
+              ) : null}
               {publicUrl ? (
                 <tr>
                   <td>URL</td>
@@ -428,6 +803,7 @@ export function FilePage({
               ) : null}
             </tbody>
           </table>
+          <UsageBlock usage={usage} />
         </article>
         <article>
           <h4>Metadata</h4>
@@ -454,6 +830,48 @@ export function FilePage({
               Credit
               <input type="text" name="credit" value={asset?.credit ?? ''} />
             </label>
+            <h4>Rights</h4>
+            <label>
+              Licence
+              <input
+                type="text"
+                name="licence"
+                value={asset?.licence ?? ''}
+                maxlength={RIGHTS_MAX.licence}
+                placeholder="CC BY 4.0, licensed from the photographer…"
+              />
+            </label>
+            <label>
+              Source URL
+              <input
+                type="url"
+                name="source_url"
+                value={asset?.source_url ?? ''}
+                maxlength={RIGHTS_MAX.sourceUrl}
+                placeholder="https://"
+              />
+            </label>
+            <label>
+              Restrictions
+              <textarea
+                name="restrictions"
+                rows={2}
+                maxlength={RIGHTS_MAX.restrictions}
+                placeholder="Editorial only, not for print…"
+              >
+                {asset?.restrictions ?? ''}
+              </textarea>
+            </label>
+            <label>
+              Expires <small class="muted">(the day the rights run out)</small>
+              <input type="date" name="expires_at" value={asset?.expires_at ?? ''} />
+            </label>
+            <p>
+              <small class="muted">
+                A file whose expiry has passed is retired by the daily run and, where the resizer
+                shares this database, answers 410 Gone.
+              </small>
+            </p>
             <button type="submit">Save</button>
           </form>
           <form method="post" action="/library/file/retire" class="retire-form">
@@ -468,6 +886,7 @@ export function FilePage({
             ) : (
               <>
                 <input type="hidden" name="retired" value="1" />
+                <InUseWarning usage={usage} verb="Retiring" />
                 <input type="text" name="note" placeholder="Why (duplicate of…, reshot…)" />
                 <button type="submit" class="contrast">
                   Retire
@@ -486,6 +905,7 @@ export function FilePage({
               <summary>Delete from the bucket…</summary>
               <form method="post" action="/library/file/delete">
                 <input type="hidden" name="key" value={key} />
+                <InUseWarning usage={usage} verb="Deleting" />
                 <p>
                   This removes <code>{key}</code> ({kb(head.size)}) from the bucket for good. There
                   is no undo; keep your originals somewhere else. Anything that links to it breaks,
@@ -681,6 +1101,8 @@ export interface BulkPreview {
   removeTags: string[];
   credit: string | undefined;
   altPattern: string | undefined;
+  licence: string | undefined;
+  expiresAt: string | undefined;
   back: string;
 }
 
@@ -694,6 +1116,15 @@ export function BulkPreviewPage({
   const sample = preview.keys.slice(0, 5);
   const hidden = (name: string, value: string | undefined) =>
     value === undefined ? null : <input type="hidden" name={name} value={value} />;
+  /** A one-value field: unchanged when the bar left it blank, cleared when it was sent empty. */
+  const change = (value: string | undefined) =>
+    value === undefined ? (
+      <small class="muted">unchanged</small>
+    ) : value === '' ? (
+      <small class="muted">cleared</small>
+    ) : (
+      value
+    );
   return (
     <>
       <Tabs active="library" />
@@ -725,15 +1156,15 @@ export function BulkPreviewPage({
           </tr>
           <tr>
             <td>Credit</td>
-            <td>
-              {preview.credit === undefined ? (
-                <small class="muted">unchanged</small>
-              ) : preview.credit === '' ? (
-                <small class="muted">cleared</small>
-              ) : (
-                preview.credit
-              )}
-            </td>
+            <td>{change(preview.credit)}</td>
+          </tr>
+          <tr>
+            <td>Licence</td>
+            <td>{change(preview.licence)}</td>
+          </tr>
+          <tr>
+            <td>Expires</td>
+            <td>{change(preview.expiresAt)}</td>
           </tr>
         </tbody>
       </table>
@@ -771,6 +1202,8 @@ export function BulkPreviewPage({
         {hidden('remove_tags', preview.removeTags.join(','))}
         {hidden('credit', preview.credit)}
         {hidden('alt_pattern', preview.altPattern)}
+        {hidden('licence', preview.licence)}
+        {hidden('expires_at', preview.expiresAt)}
         <input type="hidden" name="back" value={preview.back} />
         <div class="page-head">
           <button type="submit">Apply to {preview.keys.length}</button>
@@ -836,6 +1269,94 @@ export function DuplicatesPage({
             </p>
           </form>
         ))
+      )}
+    </>
+  );
+}
+
+export function ExpiringPage({
+  assets,
+  today,
+  preview,
+}: {
+  assets: Asset[];
+  today: string;
+  preview: Preview;
+}) {
+  return (
+    <>
+      <Tabs active="expiring" />
+      <PageHead title="Expiring">
+        <form method="post" action="/library/expiring/run" class="inline-form">
+          <button
+            type="submit"
+            class="outline"
+            title="Retire every file whose expiry date has passed, as the nightly run would"
+          >
+            Run expiry now
+          </button>
+        </form>
+      </PageHead>
+      <p>
+        <small class="muted">
+          Files whose rights have run out, or run out within {EXPIRING_DAYS} days, soonest first.
+          Each night a run retires every file whose expiry date has passed (today is {today}, UTC);
+          a retired object stays in the bucket, and where the resizer shares this database its URL
+          answers 410 Gone. Retire one early from its row, or open the file to change the date.
+        </small>
+      </p>
+      {assets.length === 0 ? (
+        <p>Nothing expires in the next {EXPIRING_DAYS} days.</p>
+      ) : (
+        <table class="expiring-table">
+          <thead>
+            <tr>
+              <th />
+              <th>Key</th>
+              <th class="num">Expires</th>
+              <th>Licence</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {assets.map((a) => (
+              <tr>
+                <td>
+                  <a href={fileHref(a.key)}>
+                    <img class="thumb" src={preview(a.key, 160)} alt="" loading="lazy" />
+                  </a>
+                </td>
+                <td>
+                  <a href={fileHref(a.key)}>
+                    <code class="path">{a.key}</code>
+                  </a>
+                  {a.restrictions ? (
+                    <p>
+                      <small class="muted">{a.restrictions}</small>
+                    </p>
+                  ) : null}
+                </td>
+                <td class="num">
+                  {a.expires_at} <ExpiryChip expiresAt={a.expires_at} today={today} />
+                </td>
+                <td>
+                  <small>{a.licence ?? ''}</small>
+                </td>
+                <td>
+                  <form method="post" action="/library/file/retire" class="inline-form">
+                    <input type="hidden" name="key" value={a.key} />
+                    <input type="hidden" name="retired" value="1" />
+                    <input type="hidden" name="note" value={`Expires ${a.expires_at}`} />
+                    <input type="hidden" name="back" value="/library/expiring" />
+                    <button type="submit" class="contrast slim">
+                      Retire
+                    </button>
+                  </form>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
     </>
   );

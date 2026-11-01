@@ -2,7 +2,30 @@ import { describe, expect, it } from 'vitest';
 import { recentActions } from '../src/audit.js';
 import { getAsset, listDuplicates, noteSeen } from '../src/library.js';
 import { layoutFromVars, subjectOf, uploadKeyPattern } from '../src/media.js';
+import type { UsageCounts, UsageReader } from '../src/usage.js';
 import { bytes, harness, ORIGIN, STAFF } from './helpers.js';
+
+/** A usage reader over a fixed table of counts; keys off the table have no hits. */
+class FakeUsage implements UsageReader {
+  constructor(readonly table: Record<string, UsageCounts> = {}) {}
+  async usageFor(keys: string[]) {
+    const out = new Map<string, UsageCounts>();
+    for (const k of keys) if (this.table[k]) out.set(k, this.table[k]);
+    return out;
+  }
+  async unusedKeys(known: string[]) {
+    return known.filter((k) => !this.table[k]);
+  }
+}
+
+class BrokenUsage implements UsageReader {
+  async usageFor(): Promise<Map<string, UsageCounts>> {
+    throw new Error('SQL API answered 500');
+  }
+  async unusedKeys(): Promise<string[]> {
+    throw new Error('SQL API answered 500');
+  }
+}
 
 describe('access and request hygiene', () => {
   it('refuses a request without an Access identity', async () => {
@@ -367,6 +390,92 @@ describe('rescan, unfiled and duplicates', () => {
       retired_note: 'duplicate of media/a/one.jpg',
     });
     expect(await listDuplicates(h.db)).toHaveLength(0);
+  });
+});
+
+describe('usage', () => {
+  it('says the file page is not configured without a reader, and the Unused view too', async () => {
+    const h = harness();
+    await h.put('media/x/a.jpg', bytes('a'));
+    const file = await (await h.req('/library/file?key=media/x/a.jpg')).text();
+    expect(file).toContain('Not configured');
+    expect(file).not.toContain('hits, 7 days');
+    const unused = await (await h.req('/library/unused')).text();
+    expect(unused).toContain('Usage is not configured');
+  });
+
+  it('shows the counts on the file page and warns before retiring or deleting a used file', async () => {
+    const h = harness({
+      usage: new FakeUsage({ 'media/x/used.jpg': { d7: 3, d30: 41 } }),
+    });
+    await h.put('media/x/used.jpg', bytes('u'));
+    await h.put('media/x/idle.jpg', bytes('i'));
+
+    const used = await (await h.req('/library/file?key=media/x/used.jpg')).text();
+    expect(used).toContain('hits, 7 days');
+    expect(used).toMatch(/<span class="stat-value">3<\/span>/);
+    expect(used).toMatch(/<span class="stat-value">41<\/span>/);
+    expect(used.match(/something still uses this file/g)).toHaveLength(2);
+    expect(used).toContain('Deleting it breaks those pages');
+
+    const idle = await (await h.req('/library/file?key=media/x/idle.jpg')).text();
+    expect(idle).toMatch(/<span class="stat-value">0<\/span>/);
+    expect(idle).not.toContain('something still uses this file');
+  });
+
+  it('keeps the file page up when the engine is down', async () => {
+    const h = harness({ usage: new BrokenUsage() });
+    await h.put('media/x/a.jpg', bytes('a'));
+    const res = await h.req('/library/file?key=media/x/a.jpg');
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('Usage unavailable: SQL API answered 500');
+    const unused = await h.req('/library/unused');
+    expect(unused.status).toBe(200);
+    expect(await unused.text()).toContain('Could not read the usage dataset');
+  });
+
+  it('lists the known, unretired files with no hits, oldest first, a page at a time', async () => {
+    const h = harness({ usage: new FakeUsage({ 'media/x/used.jpg': { d7: 0, d30: 2 } }) });
+    await h.put('media/x/used.jpg', bytes('u'));
+    await h.put('media/x/idle.jpg', bytes('i'));
+    await h.put('media/x/old.jpg', bytes('o'));
+    await h.form('/library/file/retire', [
+      ['key', 'media/x/old.jpg'],
+      ['retired', '1'],
+    ]);
+    // A hundred more idle files, seen earlier than the ones above, to fill the first page.
+    for (let i = 0; i < 100; i++) {
+      await h.db
+        .prepare("INSERT INTO assets (key, source, first_seen) VALUES (?1, 'other', ?2)")
+        .bind(
+          `media/bulk/${String(i).padStart(3, '0')}.jpg`,
+          `2026-01-01T00:00:${String(i % 60).padStart(2, '0')}Z`,
+        )
+        .run();
+    }
+    const first = await (await h.req('/library/unused')).text();
+    expect(first).toContain('101 unused, page 1 of 2');
+    expect(first).toContain('media/bulk/000.jpg');
+    expect(first).not.toContain('idle.jpg');
+    expect(first).not.toContain('used.jpg');
+    expect(first).not.toContain('old.jpg');
+    expect(first).toContain('/library/unused?page=2');
+
+    const second = await (await h.req('/library/unused?page=2')).text();
+    expect(second).toContain('idle.jpg');
+    expect(second).toContain('/library/file?key=media%2Fx%2Fidle.jpg');
+    expect(second).not.toContain('media/bulk/000.jpg');
+    expect(second).toContain('name="back" value="/library/unused?page=2"');
+
+    expect((await h.req('/library/unused?page=nope')).status).toBe(200);
+  });
+
+  it('says so when everything has been served', async () => {
+    const h = harness({ usage: new FakeUsage({ 'media/x/a.jpg': { d7: 1, d30: 1 } }) });
+    await h.put('media/x/a.jpg', bytes('a'));
+    expect(await (await h.req('/library/unused')).text()).toContain(
+      'Every file the library knows has been served',
+    );
   });
 });
 
