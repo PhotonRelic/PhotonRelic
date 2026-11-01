@@ -6,6 +6,7 @@ import { mediaUrl } from '@photonrelic/media-params';
 import type { AccessVerifier } from './access.js';
 import type { Db } from './db.js';
 import type { MediaBucket, MediaLayout } from './media.js';
+import type { UsageReader } from './usage.js';
 
 export interface AppDeps {
   db: Db;
@@ -15,6 +16,8 @@ export interface AppDeps {
   layout: MediaLayout;
   /** The resizer's public origin, no trailing slash; null streams previews through /library/raw. */
   mediaOrigin: string | null;
+  /** Hit counts from the resizer's usage dataset; null shows "not configured". */
+  usage: UsageReader | null;
   environment: string;
   now: () => Date;
 }

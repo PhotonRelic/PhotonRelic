@@ -20,6 +20,7 @@ import { decideEmbed, type EmbedPolicy } from './embed.js';
 import { type ExpiryDb, isExpired } from './expiry.js';
 import { type ImageTransformer, TransformFailed } from './images.js';
 import { isServableKey, type MediaSource } from './source.js';
+import type { UsagePoint, UsageSink } from './usage.js';
 
 export interface ResizerDeps {
   source: MediaSource;
@@ -30,6 +31,8 @@ export interface ResizerDeps {
   embed: EmbedPolicy | null;
   /** The library's database, for rights expiry; absent, every key serves. */
   db?: ExpiryDb | null;
+  /** Where each image served is counted; null counts nothing. */
+  usage: UsageSink | null;
 }
 
 export const CACHE_STORED = 'public, max-age=86400';
@@ -116,12 +119,30 @@ export function createApp(deps: ResizerDeps) {
     deps.db && (await isExpired(deps.db, key))
       ? apiError(c, 410, 'EXPIRED', 'The rights to this image have expired')
       : null;
+  /** Count one image served, after the response; only 200s reach here. */
+  const note = (c: Context, point: UsagePoint) => {
+    if (deps.usage) void background(c, deps.usage.record(point));
+  };
+  /** The point for a response the edge cache answered; the headers say what was served. */
+  const notedHit = (c: Context, key: string, hit: Response, resolved: string | null) => {
+    const length = Number(hit.headers.get('content-length'));
+    const contentType = hit.headers.get('content-type') ?? 'application/octet-stream';
+    const transformed = resolved !== null && !hit.headers.has('x-media-transform');
+    note(c, {
+      key,
+      kind: transformed ? 'transform' : 'stored',
+      format: transformed ? resolved : contentType,
+      cache: 'hit',
+      bytes: Number.isFinite(length) && length > 0 ? length : null,
+    });
+    return hit;
+  };
 
   /** Serve an object as stored. */
   const serve = async (c: Context, key: string) => {
     const { cache, cacheKey } = cacheFor(new URL(c.req.url).toString());
     const hit = await cache?.match(cacheKey);
-    if (hit) return hit;
+    if (hit) return notedHit(c, key, hit, null);
     const expired = await gone(c, key);
     if (expired) return expired;
     const object = await deps.source.get(key);
@@ -136,6 +157,7 @@ export function createApp(deps: ResizerDeps) {
       },
     });
     if (cache) void background(c, cache.put(cacheKey, res.clone()));
+    note(c, { key, kind: 'stored', format: object.contentType, cache: 'miss', bytes: object.size });
     return res;
   };
 
@@ -147,7 +169,7 @@ export function createApp(deps: ResizerDeps) {
     keyUrl.searchParams.sort();
     const { cache, cacheKey } = cacheFor(keyUrl.toString());
     const hit = await cache?.match(cacheKey);
-    if (hit) return hit;
+    if (hit) return notedHit(c, key, hit, params.resolved);
     const expired = await gone(c, key);
     if (expired) return expired;
 
@@ -160,6 +182,7 @@ export function createApp(deps: ResizerDeps) {
       vary: 'Accept',
     };
     let res: Response;
+    let point: UsagePoint;
     const images = deps.images;
     const reason = !images
       ? 'unavailable'
@@ -176,6 +199,14 @@ export function createApp(deps: ResizerDeps) {
           'x-media-transform': reason ?? 'unavailable',
         },
       });
+      // What went out is the stored object, so it is counted as one.
+      point = {
+        key,
+        kind: 'stored',
+        format: object.contentType,
+        cache: 'miss',
+        bytes: object.size,
+      };
     } else {
       const opts: Parameters<typeof images.transform>[1] = {
         width: params.width,
@@ -210,8 +241,16 @@ export function createApp(deps: ResizerDeps) {
           'content-length': String(out.body.byteLength),
         },
       });
+      point = {
+        key,
+        kind: 'transform',
+        format: params.resolved,
+        cache: 'miss',
+        bytes: out.body.byteLength,
+      };
     }
     if (cache) void background(c, cache.put(cacheKey, res.clone()));
+    note(c, point);
     return res;
   };
 

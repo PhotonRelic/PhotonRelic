@@ -33,3 +33,10 @@ bucket_name = "photonrelic-example-media"
 # `x-media-transform: unavailable`.
 [images]
 binding = "IMAGES"
+
+# Every image served is counted in this Workers Analytics Engine dataset; the
+# library reads it (USAGE_DATASET in library.toml must match) to show hits per
+# file and the files nothing has asked for in 90 days.
+[[analytics_engine_datasets]]
+binding = "USAGE"
+dataset = "photonrelic_usage"

@@ -9,6 +9,7 @@ import type { AppDeps } from './deps.js';
 import type { Env } from './env.js';
 import { isoDate, retireExpired } from './library.js';
 import { layoutFromVars, R2MediaBucket } from './media.js';
+import { AnalyticsEngineUsage, usageConfigFromVars } from './usage.js';
 
 export { createApp } from './app.jsx';
 export type { AppDeps } from './deps.js';
@@ -24,12 +25,14 @@ export function depsFromEnv(env: Env): AppDeps {
   const access = env.ACCESS_AUD
     ? new CloudflareAccessVerifier(env.ACCESS_TEAM_DOMAIN, env.ACCESS_AUD)
     : new FixedIdentityVerifier({ email: env.DEV_IDENTITY ?? 'dev@localhost', kind: 'user' });
+  const usage = usageConfigFromVars(env.CF_ACCOUNT_ID, env.ANALYTICS_TOKEN, env.USAGE_DATASET);
   return {
     db: env.DB,
     access,
     media: env.MEDIA ? new R2MediaBucket(env.MEDIA) : null,
     layout: layoutFromVars(env.UPLOAD_PREFIX, env.LIBRARY_PREFIXES),
     mediaOrigin: env.MEDIA_ORIGIN ? env.MEDIA_ORIGIN.replace(/\/$/, '') : null,
+    usage: usage ? new AnalyticsEngineUsage(usage) : null,
     environment: env.ENVIRONMENT,
     now: () => new Date(),
   };

@@ -22,6 +22,7 @@ import {
   getAssets,
   IMAGE_KEY,
   isoDate,
+  listActive,
   listDuplicates,
   listExpiring,
   listUnfiled,
@@ -47,6 +48,7 @@ import {
   UPLOAD_SOURCE_TAG,
   uploadKeyPattern,
 } from '../media.js';
+import { USAGE_RETENTION_DAYS } from '../usage.js';
 import {
   BrowsePage,
   type BulkPreview,
@@ -59,8 +61,13 @@ import {
   SearchPage,
   type Tile,
   UnfiledPage,
+  UnusedPage,
   UploadPage,
+  type UsageStatus,
 } from '../views/library.jsx';
+
+/** Unused files to a page; the whole set is computed, this is how much is shown at once. */
+const UNUSED_PAGE = 100;
 
 const SAFE_BACK = /^\/library(?:[/?#][^\s]*)?$/;
 const NO_STORE = 'No media bucket is bound to this Worker.';
@@ -136,6 +143,19 @@ export function libraryRoutes(deps: AppDeps) {
       countExpiring(deps.db, today()),
     ]);
     return { unfiled, duplicateKeys, expiring };
+  }
+
+  /** One key's hit counts for the file page. The engine being down costs a line, not the page. */
+  async function usageOf(key: string): Promise<UsageStatus> {
+    if (!deps.usage) return { state: 'off' };
+    try {
+      const counts = (await deps.usage.usageFor([key])).get(key) ?? { d7: 0, d30: 0 };
+      return { state: 'ok', counts };
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      console.error(JSON.stringify({ msg: 'usage lookup failed', key, error: message }));
+      return { state: 'error', message };
+    }
   }
 
   // Browse ----------------------------------------------------------------
@@ -232,9 +252,10 @@ export function libraryRoutes(deps: AppDeps) {
   app.get('/file', async (c) => {
     const key = c.req.query('key') ?? '';
     if (!isLibraryKey(layout, key)) return redirectWith(c, '/library', 'error', 'No such key.');
-    const [head, asset] = await Promise.all([
+    const [head, asset, usage] = await Promise.all([
       deps.media ? deps.media.head(key) : Promise.resolve(null),
       getAsset(deps.db, key),
+      usageOf(key),
     ]);
     return page(
       c,
@@ -248,6 +269,7 @@ export function libraryRoutes(deps: AppDeps) {
         publicUrl={publicUrl(deps, key)}
         hasStore={Boolean(deps.media)}
         today={today()}
+        usage={usage}
       />,
     );
   });
@@ -460,6 +482,54 @@ export function libraryRoutes(deps: AppDeps) {
       n === 0
         ? `Expiry run: nothing had expired before ${r.today}.`
         : `Expiry run: retired ${n} file${n === 1 ? '' : 's'} expired before ${r.today}.`,
+    );
+  });
+
+  // Unused ------------------------------------------------------------------
+  // The engine is asked for the keys WITH hits (one grouped list, paged) and
+  // the library subtracts; asking per key would be thousands of statements.
+  app.get('/unused', async (c) => {
+    const requested = Number(c.req.query('page') ?? '1');
+    const current = Number.isInteger(requested) && requested > 0 ? requested : 1;
+    let tiles: Tile[] = [];
+    let total = 0;
+    let status: 'off' | 'ok' | 'error' = 'off';
+    let message: string | null = null;
+    if (deps.usage) {
+      try {
+        const active = await listActive(deps.db);
+        const unused = new Set(
+          await deps.usage.unusedKeys(
+            active.map((a) => a.key),
+            USAGE_RETENTION_DAYS,
+          ),
+        );
+        const all = active.filter((a) => unused.has(a.key));
+        total = all.length;
+        tiles = all.slice((current - 1) * UNUSED_PAGE, current * UNUSED_PAGE).map((a) => ({
+          object: { key: a.key, size: a.bytes ?? 0, uploaded: a.first_seen, etag: a.etag },
+          asset: a,
+        }));
+        status = 'ok';
+      } catch (e) {
+        message = e instanceof Error ? e.message : String(e);
+        console.error(JSON.stringify({ msg: 'unused lookup failed', error: message }));
+        status = 'error';
+      }
+    }
+    return page(
+      c,
+      deps,
+      'Unused',
+      <UnusedPage
+        tiles={tiles}
+        preview={preview}
+        total={total}
+        page={current}
+        pages={Math.max(1, Math.ceil(total / UNUSED_PAGE))}
+        status={status}
+        message={message}
+      />,
     );
   });
 

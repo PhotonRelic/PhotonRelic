@@ -403,6 +403,14 @@ export async function listUnfiled(db: Db, limit = 500): Promise<Asset[]> {
   return results.map(fromRow);
 }
 
+/** Every key the library knows and has not retired, oldest first: the candidates for "unused". */
+export async function listActive(db: Db): Promise<Asset[]> {
+  const { results } = await db
+    .prepare('SELECT * FROM assets WHERE retired = 0 ORDER BY first_seen, key')
+    .all<AssetRow>();
+  return results.map(fromRow);
+}
+
 export async function countUnfiled(db: Db): Promise<number> {
   const r = await db
     .prepare('SELECT COUNT(*) AS n FROM assets WHERE subject IS NULL AND retired = 0')

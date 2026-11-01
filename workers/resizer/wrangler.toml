@@ -52,3 +52,12 @@ bucket_name = "photonrelic-media"
 # Without it, objects are served as stored with `x-media-transform: unavailable`.
 [images]
 binding = "IMAGES"
+
+# Optional: count every image served in a Workers Analytics Engine dataset,
+# so the library can show how often a file is used and list files nothing
+# has asked for in 90 days (the engine's retention). The library reads the
+# same dataset name through USAGE_DATASET. Without the binding nothing is
+# counted. Locally the points are discarded unless `remote = true`.
+# [[analytics_engine_datasets]]
+# binding = "USAGE"
+# dataset = "photonrelic_usage"
