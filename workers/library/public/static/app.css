@@ -502,6 +502,15 @@ nav.tabs a:hover { color: var(--pr-highlight); }
 .bulk-actions button, .bulk-actions [role=button] { width: auto; margin: 0; }
 .retire-form { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid var(--pr-border-soft); }
 .retire-form input[type=text] { margin-bottom: 0.5rem; }
+.retire-form .flash, .delete-file .flash { margin: 0 0 0.8rem; }
+/* The file page's hit counts: the stat faces, in a row under the details table */
+.usage-block { margin-top: 1rem; padding-top: 0.8rem; border-top: 1px solid var(--pr-border-soft); }
+.usage-block h4 { margin-bottom: 0.5rem; }
+.usage-row { display: flex; gap: 2rem; margin-bottom: 0.4rem; }
+.usage-stat { display: flex; flex-direction: column; gap: 0.2rem; }
+.usage-stat .stat-value { font-size: 1.5rem; }
+.usage-stat .stat-label { text-align: left; }
+.flash .n { font-family: var(--pr-font-mono); font-weight: 600; font-variant-numeric: tabular-nums; }
 .help-tip { position: relative; margin: 0; }
 .help-tip summary { display: inline-block; padding: 0.3rem 0.7rem; border: 1px dashed var(--pr-border); border-radius: 4px; font: 600 10px var(--pr-font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--pr-text-soft); cursor: help; list-style: none; }
 .help-tip summary::-webkit-details-marker { display: none; }

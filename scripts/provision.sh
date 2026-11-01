@@ -104,7 +104,8 @@ if [ -f "$LIB" ]; then
   tmp=$(mktemp)
   sed -e "s|^ACCESS_TEAM_DOMAIN = \".*\"|ACCESS_TEAM_DOMAIN = \"$TEAM_DOMAIN\"|" \
       -e "s|^ACCESS_AUD = \".*\"|ACCESS_AUD = \"$AUD\"|" \
+      -e "s|^CF_ACCOUNT_ID = \".*\"|CF_ACCOUNT_ID = \"$CLOUDFLARE_ACCOUNT_ID\"|" \
       -e "s|^database_id = \".*\"|database_id = \"$DB_ID\"|" "$LIB" > "$tmp" && mv "$tmp" "$LIB"
-  grep -E '^(ACCESS_TEAM_DOMAIN|ACCESS_AUD|database_id) ' "$LIB"
+  grep -E '^(ACCESS_TEAM_DOMAIN|ACCESS_AUD|CF_ACCOUNT_ID|database_id) ' "$LIB"
 fi
 echo "done. Next: sh $ROOT/scripts/deploy.sh $ENV_DIR"

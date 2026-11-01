@@ -35,6 +35,13 @@ ACCESS_AUD = "REPLACE_ACCESS_AUD"
 MEDIA_ORIGIN = "https://img.example.com"
 UPLOAD_PREFIX = "media/"
 LIBRARY_PREFIXES = "media/"
+# Hit counts per file and the Unused view, read from the dataset the resizer
+# writes (resizer.toml). The account id is filled in by provision.sh; the
+# token is a secret deploy.sh sets from ANALYTICS_TOKEN in .env when it is
+# there (Account Analytics Read). Without the token the pages say "not
+# configured" and nothing else changes.
+CF_ACCOUNT_ID = "REPLACE_CF_ACCOUNT_ID"
+USAGE_DATASET = "photonrelic_usage"
 
 [[d1_databases]]
 binding = "DB"

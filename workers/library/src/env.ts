@@ -1,6 +1,7 @@
 /**
- * Worker bindings and variables (wrangler.toml). Nothing here is a secret;
- * DEV_IDENTITY comes from .dev.vars in local development only.
+ * Worker bindings and variables (wrangler.toml). Nothing here is a secret
+ * except ANALYTICS_TOKEN (`wrangler secret put`); DEV_IDENTITY comes from
+ * .dev.vars in local development only.
  */
 export interface Env {
   /** The library's metadata and audit log. */
@@ -23,4 +24,10 @@ export interface Env {
   LIBRARY_PREFIXES?: string;
   /** Local development only: the identity to trust when ACCESS_AUD is unset. */
   DEV_IDENTITY?: string;
+  /** The account whose Analytics Engine holds the resizer's usage dataset. */
+  CF_ACCOUNT_ID?: string;
+  /** A secret: an API token with Account Analytics Read. Set, it turns usage on. */
+  ANALYTICS_TOKEN?: string;
+  /** The resizer's dataset name; default `photonrelic_usage`. */
+  USAGE_DATASET?: string;
 }

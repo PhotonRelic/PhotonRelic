@@ -32,3 +32,9 @@ need_credentials
 [ ! -f "$LIB" ] || wr library d1 migrations apply DB --remote -c "$LIB"
 [ ! -f "$RES" ] || wr resizer deploy -c "$RES"
 [ ! -f "$LIB" ] || wr library deploy -c "$LIB"
+# Optional: the token the library reads usage with (Account Analytics Read),
+# from .env. Putting a secret replaces it, so this is safe to run every time;
+# without ANALYTICS_TOKEN nothing is put and the library says "not configured".
+if [ -f "$LIB" ] && [ -n "${ANALYTICS_TOKEN:-}" ]; then
+  printf '%s' "$ANALYTICS_TOKEN" | wr library secret put ANALYTICS_TOKEN -c "$LIB"
+fi

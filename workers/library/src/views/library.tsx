@@ -2,7 +2,7 @@
  * The media library pages: the bucket-first browser with selection and the
  * bulk bar, one file, the upload page (with the rclone procedure beside the
  * drop zone), the bulk filing preview, the duplicates view, the unfiled
- * queue and the expiring view.
+ * queue, the expiring view and the unused list.
  */
 import type {
   Asset,
@@ -19,12 +19,20 @@ import {
   UPLOAD_MAX_BYTES,
   UPLOAD_MAX_LABEL,
 } from '../media.js';
+import { USAGE_RETENTION_DAYS, type UsageCounts } from '../usage.js';
 import { kb, when } from './layout.js';
 
 /** How a page builds an image URL for a key; the handler binds it to the deps. */
 export type Preview = (key: string, width?: number) => string;
 
-export type LibraryTab = 'library' | 'search' | 'upload' | 'unfiled' | 'duplicates' | 'expiring';
+export type LibraryTab =
+  | 'library'
+  | 'search'
+  | 'upload'
+  | 'unfiled'
+  | 'duplicates'
+  | 'expiring'
+  | 'unused';
 
 export function Tabs({ active }: { active: LibraryTab }) {
   const items: [LibraryTab, string, string][] = [
@@ -34,6 +42,7 @@ export function Tabs({ active }: { active: LibraryTab }) {
     ['unfiled', '/library/unfiled', 'Unfiled'],
     ['duplicates', '/library/duplicates', 'Duplicates'],
     ['expiring', '/library/expiring', 'Expiring'],
+    ['unused', '/library/unused', 'Unused'],
   ];
   return (
     <nav class="tabs" aria-label="Library">
@@ -556,6 +565,135 @@ export function UnfiledPage({
   );
 }
 
+export function UnusedPage({
+  tiles,
+  preview,
+  total,
+  page,
+  pages,
+  status,
+  message,
+}: {
+  tiles: Tile[];
+  preview: Preview;
+  total: number;
+  page: number;
+  pages: number;
+  status: 'off' | 'ok' | 'error';
+  message: string | null;
+}) {
+  const self = `/library/unused?page=${page}`;
+  return (
+    <>
+      <Tabs active="unused" />
+      <PageHead title="Unused" />
+      <p>
+        <small class="muted">
+          Files the library knows, not retired, that the resizer has not served in the last{' '}
+          {USAGE_RETENTION_DAYS} days, as far as its usage dataset can tell: it keeps{' '}
+          {USAGE_RETENTION_DAYS} days and samples at high volume. A file newer than that has had
+          little chance to be used (First seen is on its file page), and a file served from a page's
+          own cache, or copied elsewhere, is not counted. Oldest first. Open a file to retire or
+          delete it; select files to tag them.
+        </small>
+      </p>
+      {status === 'off' ? (
+        <article class="flash flash-info">
+          Usage is not configured. Bind <code>USAGE</code> in the resizer and set{' '}
+          <code>CF_ACCOUNT_ID</code> and <code>ANALYTICS_TOKEN</code> here.
+        </article>
+      ) : status === 'error' ? (
+        <article class="flash flash-error">Could not read the usage dataset: {message}</article>
+      ) : tiles.length === 0 ? (
+        <p>Every file the library knows has been served in the last {USAGE_RETENTION_DAYS} days.</p>
+      ) : (
+        <>
+          <p>
+            <small class="muted">
+              {total} unused, page {page} of {pages}.
+            </small>
+          </p>
+          <SelectionForm back={self} tiles={tiles} preview={preview} />
+          {pages > 1 ? (
+            <p class="bulk-actions">
+              {page > 1 ? (
+                <a href={`/library/unused?page=${page - 1}`} role="button" class="outline">
+                  Previous
+                </a>
+              ) : null}
+              {page < pages ? (
+                <a href={`/library/unused?page=${page + 1}`} role="button" class="outline">
+                  More
+                </a>
+              ) : null}
+            </p>
+          ) : null}
+        </>
+      )}
+    </>
+  );
+}
+
+/** What the file page knows about a key's hits: nothing configured, the counts, or why not. */
+export type UsageStatus =
+  | { state: 'off' }
+  | { state: 'ok'; counts: UsageCounts }
+  | { state: 'error'; message: string };
+
+export const USAGE_CAVEAT =
+  'Estimates from the resizer: sampled at high volume, kept for 90 days. Cached copies count; a page that loads the image from its own cache does not.';
+
+/** The file page's hit counts; the handler fetched them from the engine. */
+export function UsageBlock({ usage }: { usage: UsageStatus }) {
+  return (
+    <section class="usage-block">
+      <h4>Usage</h4>
+      {usage.state === 'off' ? (
+        <p>
+          <small class="muted">
+            Not configured. Bind <code>USAGE</code> in the resizer and set{' '}
+            <code>CF_ACCOUNT_ID</code> and <code>ANALYTICS_TOKEN</code> here to count hits.
+          </small>
+        </p>
+      ) : usage.state === 'error' ? (
+        <p>
+          <small class="muted">Usage unavailable: {usage.message}</small>
+        </p>
+      ) : (
+        <>
+          <div class="usage-row">
+            <div class="usage-stat">
+              <span class="stat-value">{usage.counts.d7}</span>
+              <span class="stat-label">hits, 7 days</span>
+            </div>
+            <div class="usage-stat">
+              <span class="stat-value">{usage.counts.d30}</span>
+              <span class="stat-label">hits, 30 days</span>
+            </div>
+          </div>
+          <p>
+            <small class="muted">{USAGE_CAVEAT}</small>
+          </p>
+        </>
+      )}
+    </section>
+  );
+}
+
+/** Before retiring or deleting: a file something asked for last month is still in use. */
+function InUseWarning({ usage, verb }: { usage: UsageStatus; verb: 'Retiring' | 'Deleting' }) {
+  if (usage.state !== 'ok' || usage.counts.d30 <= 0) return null;
+  return (
+    <article class="flash flash-warning">
+      Served <span class="n">{usage.counts.d30}</span> time{usage.counts.d30 === 1 ? '' : 's'} in
+      the last 30 days (an estimate): something still uses this file.{' '}
+      {verb === 'Deleting'
+        ? 'Deleting it breaks those pages.'
+        : 'Retiring keeps it serving, but check what links to it before deleting.'}
+    </article>
+  );
+}
+
 export function FilePage({
   objectKey: key,
   head,
@@ -564,6 +702,7 @@ export function FilePage({
   publicUrl,
   hasStore,
   today,
+  usage,
 }: {
   objectKey: string;
   head: { size: number; contentType: string; etag: string | null } | null;
@@ -572,6 +711,7 @@ export function FilePage({
   publicUrl: string | null;
   hasStore: boolean;
   today: string;
+  usage: UsageStatus;
 }) {
   const filing = filingLabel(asset ?? undefined);
   return (
@@ -663,6 +803,7 @@ export function FilePage({
               ) : null}
             </tbody>
           </table>
+          <UsageBlock usage={usage} />
         </article>
         <article>
           <h4>Metadata</h4>
@@ -745,6 +886,7 @@ export function FilePage({
             ) : (
               <>
                 <input type="hidden" name="retired" value="1" />
+                <InUseWarning usage={usage} verb="Retiring" />
                 <input type="text" name="note" placeholder="Why (duplicate of…, reshot…)" />
                 <button type="submit" class="contrast">
                   Retire
@@ -763,6 +905,7 @@ export function FilePage({
               <summary>Delete from the bucket…</summary>
               <form method="post" action="/library/file/delete">
                 <input type="hidden" name="key" value={key} />
+                <InUseWarning usage={usage} verb="Deleting" />
                 <p>
                   This removes <code>{key}</code> ({kb(head.size)}) from the bucket for good. There
                   is no undo; keep your originals somewhere else. Anything that links to it breaks,
