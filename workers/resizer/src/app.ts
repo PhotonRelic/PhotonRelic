@@ -4,7 +4,8 @@
  * optionally ?ar= and ?f=) from the menu, the Images binding transforms it
  * and the edge cache keeps the output. A source over the binding's 20 MB
  * input cap, or an environment without the binding, is served as stored with
- * an `x-media-transform` header saying why.
+ * an `x-media-transform` header saying why. With the library's database
+ * bound, a key whose rights have expired answers 410 on a cache miss.
  */
 import {
   MAX_TRANSFORM_SOURCE_BYTES,
@@ -16,6 +17,7 @@ import {
 import { type Context, Hono } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { decideEmbed, type EmbedPolicy } from './embed.js';
+import { type ExpiryDb, isExpired } from './expiry.js';
 import { type ImageTransformer, TransformFailed } from './images.js';
 import { isServableKey, type MediaSource } from './source.js';
 
@@ -26,6 +28,8 @@ export interface ResizerDeps {
   menu: ResizeMenu;
   /** Where images may be embedded from; null is open to every page. */
   embed: EmbedPolicy | null;
+  /** The library's database, for rights expiry; absent, every key serves. */
+  db?: ExpiryDb | null;
 }
 
 export const CACHE_STORED = 'public, max-age=86400';
@@ -51,6 +55,7 @@ type ErrorCode =
   | 'BAD_MEDIA_PARAMS'
   | 'MEDIA_UNAVAILABLE'
   | 'FORBIDDEN_ORIGIN'
+  | 'EXPIRED'
   | 'INTERNAL';
 
 function apiError(c: Context, status: ContentfulStatusCode, code: ErrorCode, message: string) {
@@ -102,11 +107,23 @@ export function createApp(deps: ResizerDeps) {
     return { cache, cacheKey: new Request(keyUrl, { method: 'GET' }) };
   };
 
+  /**
+   * The 410 for a key whose rights have run out, or null. Asked on a cache
+   * miss only, so a copy already at the edge serves out its day; the 410
+   * itself is not cached, so un-retiring (a new date) takes effect at once.
+   */
+  const gone = async (c: Context, key: string) =>
+    deps.db && (await isExpired(deps.db, key))
+      ? apiError(c, 410, 'EXPIRED', 'The rights to this image have expired')
+      : null;
+
   /** Serve an object as stored. */
   const serve = async (c: Context, key: string) => {
     const { cache, cacheKey } = cacheFor(new URL(c.req.url).toString());
     const hit = await cache?.match(cacheKey);
     if (hit) return hit;
+    const expired = await gone(c, key);
+    if (expired) return expired;
     const object = await deps.source.get(key);
     if (!object) return apiError(c, 404, 'NOT_FOUND', 'No such media');
     const res = new Response(object.body, {
@@ -131,6 +148,8 @@ export function createApp(deps: ResizerDeps) {
     const { cache, cacheKey } = cacheFor(keyUrl.toString());
     const hit = await cache?.match(cacheKey);
     if (hit) return hit;
+    const expired = await gone(c, key);
+    if (expired) return expired;
 
     const object = await deps.source.get(key);
     if (!object) return apiError(c, 404, 'NOT_FOUND', 'No such media');

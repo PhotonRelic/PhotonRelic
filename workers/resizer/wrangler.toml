@@ -40,6 +40,14 @@ SERVED_PREFIXES = "media/"
 binding = "MEDIA"
 bucket_name = "photonrelic-media"
 
+# Optional: the library's database, read only. With it, a key whose rights
+# have expired (the file page's Expires date has passed) answers 410 Gone on
+# a cache miss. Without it, expiry only retires the file in the library.
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "photonrelic"
+# database_id = "00000000-0000-0000-0000-000000000000"
+
 # Cloudflare Images: billed per unique source-and-parameters pair per month.
 # Without it, objects are served as stored with `x-media-transform: unavailable`.
 [images]
