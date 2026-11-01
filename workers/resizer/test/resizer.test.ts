@@ -4,10 +4,18 @@ import {
   DEFAULT_MENU,
   MAX_TRANSFORM_SOURCE_BYTES,
   menuFromLists,
+  parseMediaParams,
+  variantUrls,
 } from '@photonrelic/media-params';
 import { describe, expect, it } from 'vitest';
 import { decodeCursor, encodeCursor } from '../src/api.js';
-import { CACHE_API, CACHE_STORED, CACHE_TRANSFORMED, createApp } from '../src/app.js';
+import {
+  CACHE_API,
+  CACHE_STORED,
+  CACHE_TRANSFORMED,
+  createApp,
+  transformCacheKey,
+} from '../src/app.js';
 import type { Db, DbStatement } from '../src/db.js';
 import {
   decideEmbed,
@@ -732,5 +740,36 @@ describe('usage', () => {
         doubles: [1],
       },
     ]);
+  });
+});
+
+describe('the cache key and the library purge agree', () => {
+  it('every request the menu allows is cached under a URL the purge lists, and nothing else', () => {
+    const menu = menuFromLists('320,768', '1:1,16:9');
+    const origin = 'https://img.example.com';
+    const key = 'media/workshop/bench.jpg';
+    const listed = new Set(variantUrls(origin, key, menu));
+    const seen = new Set<string>();
+    const accepts = ['image/avif,image/webp,*/*', 'image/webp,*/*', '*/*', null];
+    for (const w of menu.widths) {
+      for (const ar of [null, ...menu.aspects]) {
+        for (const f of ['avif', 'webp', 'jpeg', 'auto', null]) {
+          for (const accept of accepts) {
+            // Parameters in an order the builder would not use, and the crop unencoded.
+            const q = [f ? `f=${f}` : null, ar ? `ar=${ar}` : null, `w=${w}`].filter(Boolean);
+            const url = new URL(`${origin}/${key}?${q.join('&')}`);
+            const parsed = parseMediaParams(url, accept, menu);
+            expect(parsed.kind).toBe('transform');
+            if (parsed.kind !== 'transform') continue;
+            const cacheKey = transformCacheKey(url.toString(), parsed.params.resolved);
+            expect(listed.has(cacheKey)).toBe(true);
+            seen.add(cacheKey);
+          }
+        }
+      }
+    }
+    // The stored object is cached under its bare URL, which the purge lists first.
+    seen.add(new URL(`${origin}/${key}`).toString());
+    expect([...listed].sort()).toEqual([...seen].sort());
   });
 });

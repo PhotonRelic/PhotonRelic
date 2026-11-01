@@ -1,8 +1,8 @@
 /**
  * The media library pages: the bucket-first browser with selection and the
- * bulk bar, one file, the upload page (with the rclone procedure beside the
- * drop zone), the bulk filing preview, the duplicates view, the unfiled
- * queue, the expiring view and the unused list.
+ * bulk bar, one file (with its Replace and Delete), the upload page (with the
+ * rclone procedure beside the drop zone), the bulk filing preview, the
+ * duplicates view, the unfiled queue, the expiring view and the unused list.
  */
 import type {
   Asset,
@@ -19,6 +19,7 @@ import {
   type MediaObject,
   UPLOAD_MAX_BYTES,
   UPLOAD_MAX_LABEL,
+  WEB_IMAGE_KEY,
 } from '../media.js';
 import { USAGE_RETENTION_DAYS, type UsageCounts } from '../usage.js';
 import { kb, when } from './layout.js';
@@ -857,6 +858,7 @@ export function FilePage({
   today,
   usage,
   markup,
+  purge,
 }: {
   objectKey: string;
   head: { size: number; contentType: string; etag: string | null } | null;
@@ -868,8 +870,14 @@ export function FilePage({
   usage: UsageStatus;
   /** The Markup panel's model; null when no resizer is configured. */
   markup: MarkupPanelModel | null;
+  /** Whether the edge is purged after a Replace or Delete, or left to expire. */
+  purge: boolean;
 }) {
   const filing = filingLabel(asset ?? undefined);
+  const ext = key.slice(key.lastIndexOf('.') + 1).toLowerCase();
+  const cacheNote = purge
+    ? 'Every copy the edge holds is purged at once; a browser that already has one may keep it for up to an hour.'
+    : 'The edge keeps serving cached copies for up to a day (no purge is configured), and a browser that already has one for up to an hour.';
   return (
     <>
       <Tabs active="library" />
@@ -1057,6 +1065,37 @@ export function FilePage({
               </small>
             </p>
           </form>
+          {!hasStore || !head || asset?.retired || !WEB_IMAGE_KEY.test(key) ? null : (
+            <details
+              class="replace-file"
+              id="pr-replace"
+              data-key={key}
+              data-max-bytes={String(UPLOAD_MAX_BYTES)}
+            >
+              <summary>Replace the image…</summary>
+              <p>
+                New bytes under the same key: a reshoot or a re-edit of <code>{key}</code>, for
+                every page that already links to it. It must be a <code>.{ext}</code> under{' '}
+                {UPLOAD_MAX_LABEL}; it is hashed in your browser first, and the same bytes again are
+                refused. The subject, tags, alt text and credit stay. {cacheNote}
+              </p>
+              <p>
+                <label class="file-link">
+                  choose a .{ext} file
+                  <input
+                    type="file"
+                    id="pr-replace-file"
+                    accept={ext === 'jpg' || ext === 'jpeg' ? '.jpg,.jpeg' : `.${ext}`}
+                    hidden
+                  />
+                </label>
+              </p>
+              <p id="pr-replace-state" class="upload-summary" hidden />
+              <button type="button" id="pr-replace-start" class="contrast" disabled>
+                Replace for good
+              </button>
+            </details>
+          )}
           {!hasStore || !head ? null : (
             <details class="delete-file">
               <summary>Delete from the bucket…</summary>
@@ -1065,8 +1104,8 @@ export function FilePage({
                 <InUseWarning usage={usage} verb="Deleting" />
                 <p>
                   This removes <code>{key}</code> ({kb(head.size)}) from the bucket for good. There
-                  is no undo; keep your originals somewhere else. Anything that links to it breaks,
-                  though the edge may keep serving resized copies for up to a day.
+                  is no undo; keep your originals somewhere else. Anything that links to it breaks.{' '}
+                  {cacheNote}
                 </p>
                 <label>
                   <input type="checkbox" name="confirm" value="delete" required /> Yes, delete this

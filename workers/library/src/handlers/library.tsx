@@ -2,14 +2,17 @@
  * The media library's pages and writes, mounted under /library: the
  * bucket-first browser, one file, bulk filing, the upload page with its
  * precheck and streamed PUT, duplicates, the unfiled queue, the expiring
- * view with its run-now control, Rescan, and the one door that removes an
- * object: the file page's Delete, confirmed by the person pressing it.
+ * view with its run-now control, Rescan, and the two doors that change an
+ * object in place: the file page's Replace (new bytes under the same key)
+ * and Delete, each confirmed by the person pressing it. Both purge the edge
+ * afterwards when a purge is configured.
  */
+import { variantUrls } from '@photonrelic/media-params';
 import { Hono } from 'hono';
 import { type LibraryContext, page } from '../app.jsx';
 import { logAction } from '../audit.js';
 import { type AppDeps, previewUrl, publicUrl } from '../deps.js';
-import { redirectWith } from '../flash.js';
+import { redirectWith, setFlash } from '../flash.js';
 import {
   type Asset,
   checkRights,
@@ -22,6 +25,7 @@ import {
   getAssets,
   IMAGE_KEY,
   isoDate,
+  knownSha256,
   listActive,
   listDuplicates,
   listExpiring,
@@ -30,7 +34,9 @@ import {
   parseCaptureHeader,
   parseTags,
   precheck,
+  recordReplace,
   recordUpload,
+  replacePrecheck,
   rescan,
   retireAsset,
   retireExpired,
@@ -46,10 +52,14 @@ import {
   isLibraryKey,
   type MediaBucket,
   type MediaObject,
+  sha256Hex,
+  sniffImageType,
   UPLOAD_MAX_BYTES,
   UPLOAD_SOURCE_TAG,
   uploadKeyPattern,
+  WEB_IMAGE_KEY,
 } from '../media.js';
+import { type PurgeResult, purgeUrls } from '../purge.js';
 import { USAGE_RETENTION_DAYS } from '../usage.js';
 import {
   BrowsePage,
@@ -159,6 +169,39 @@ export function libraryRoutes(deps: AppDeps) {
       return { state: 'error', message };
     }
   }
+
+  // Purge ---------------------------------------------------------------------
+  /**
+   * Drop every copy the edge may hold of these keys: the stored object and each
+   * size on the menu. Awaited rather than left to run after the response, so the
+   * page the person lands on next is fetched after the edge has let go, and the
+   * flash can say truthfully whether it did. A failure is a line in the audit
+   * log and in the flash, never an error page: the write already happened.
+   */
+  /** Changed keys a Rescan purges within its own request: five API calls each. */
+  const RESCAN_PURGE_KEYS = 8;
+
+  async function purgeKeys(who: string, keys: string[]): Promise<PurgeResult> {
+    const origin = deps.mediaOrigin;
+    const urls = origin ? keys.flatMap((k) => variantUrls(origin, k, deps.menu)) : [];
+    const r = await purgeUrls(deps.purge, urls);
+    if (r.error !== null)
+      await logAction(deps.db, {
+        actor: who,
+        action: 'library.purge',
+        detail: { keys, urls: urls.length, purged: r.urls, error: r.error },
+        ok: false,
+      });
+    return r;
+  }
+
+  /** The end of a flash after a write that changed what the edge serves. */
+  const purgeNote = (r: PurgeResult): string =>
+    !r.configured
+      ? 'Cached copies refresh within a day.'
+      : r.error === null
+        ? 'Cached copies purged.'
+        : `The purge failed (${r.error}); cached copies refresh within a day.`;
 
   // Browse ----------------------------------------------------------------
   app.get('/', async (c) => {
@@ -275,8 +318,9 @@ export function libraryRoutes(deps: AppDeps) {
         today={today()}
         usage={usage}
         markup={markup}
+        purge={deps.purge !== null}
       />,
-      { modules: markup ? ['/static/pr-markup.js'] : [] },
+      { modules: [...(markup ? ['/static/pr-markup.js'] : []), '/static/pr-upload.js'] },
     );
   });
 
@@ -339,8 +383,106 @@ export function libraryRoutes(deps: AppDeps) {
     );
   });
 
+  // Replace: new bytes under the same key, the one sanctioned overwrite. The
+  // browser hashes the file and asks first; the PUT reads the whole body (the
+  // cap keeps it small), checks the hash and the format before the write, so
+  // the object is never left holding something the key does not describe.
+  app.post('/file/replace/precheck', async (c) => {
+    if (!deps.media) return c.json({ ok: false, error: NO_STORE }, 503);
+    const body = (await c.req.json().catch(() => null)) as Partial<PrecheckEntry> | null;
+    if (
+      !body ||
+      typeof body.key !== 'string' ||
+      typeof body.sha256 !== 'string' ||
+      typeof body.size !== 'number'
+    )
+      return c.json({ ok: false, error: 'Send key, sha256 and size.' }, 400);
+    const answer = await replacePrecheck(deps.db, deps.media, layout, {
+      key: body.key,
+      sha256: body.sha256.toLowerCase(),
+      size: body.size,
+    });
+    return c.json({ ok: true, answer });
+  });
+
+  app.put('/file/replace', async (c) => {
+    if (!deps.media) return c.json({ ok: false, error: NO_STORE }, 503);
+    const media = deps.media;
+    const key = c.req.query('key') ?? '';
+    if (!isLibraryKey(layout, key) || !WEB_IMAGE_KEY.test(key))
+      return c.json({ ok: false, error: 'Not a key the library can replace.' }, 400);
+    const length = Number(c.req.header('content-length') ?? 'NaN');
+    if (!Number.isFinite(length) || length <= 0)
+      return c.json({ ok: false, error: 'Content-Length is required.' }, 411);
+    if (length > UPLOAD_MAX_BYTES) return c.json({ ok: false, error: TOO_BIG }, 413);
+    const sha256 = (c.req.header('x-sha256') ?? '').toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(sha256))
+      return c.json({ ok: false, error: 'X-SHA256 is required.' }, 400);
+    const [head, asset] = await Promise.all([media.head(key), getAsset(deps.db, key)]);
+    if (!head) return c.json({ ok: false, error: 'This key is not in the bucket.' }, 404);
+    const from = knownSha256(head, asset);
+    if (from === sha256)
+      return c.json(
+        { ok: false, error: 'The same bytes are already at this key; nothing to replace.' },
+        409,
+      );
+    const bytes = await c.req.raw.arrayBuffer();
+    if (bytes.byteLength !== length)
+      return c.json({ ok: false, error: 'The body was not the declared length.' }, 400);
+    if ((await sha256Hex(bytes)) !== sha256)
+      return c.json({ ok: false, error: 'The bytes do not match X-SHA256; try again.' }, 400);
+    const contentType = contentTypeFor(key);
+    const sniffed = sniffImageType(bytes);
+    if (sniffed !== contentType)
+      return c.json(
+        {
+          ok: false,
+          error: `This key is ${contentType}; the file is ${sniffed ?? 'not a web image'}. Keys keep their extension.`,
+        },
+        415,
+      );
+    const who = actor(c);
+    const num = (h: string) => {
+      const n = Number(c.req.header(h) ?? 'NaN');
+      return Number.isInteger(n) && n > 0 ? n : null;
+    };
+    await media.put(key, bytes, contentType, {
+      customMetadata: { sha256, uploadedBy: who, source: UPLOAD_SOURCE_TAG },
+    });
+    const after = await media.head(key);
+    await recordReplace(
+      deps.db,
+      layout,
+      {
+        key,
+        sha256,
+        etag: after?.etag ?? null,
+        bytes: after?.size ?? length,
+        content_type: contentType,
+        width: num('x-width'),
+        height: num('x-height'),
+        uploaded_by: who,
+      },
+      deps.now(),
+    );
+    await logAction(deps.db, {
+      actor: who,
+      action: 'library.replaced',
+      detail: { key, from, to: sha256, bytes: after?.size ?? length },
+    });
+    const purge = await purgeKeys(who, [key]);
+    // The page the browser goes to next shows this; the cookie rides on the JSON answer.
+    setFlash(
+      c,
+      purge.configured && purge.error !== null ? 'warning' : 'success',
+      `Replaced ${key}. ${purgeNote(purge)} Your own browser may keep its copy for up to an hour.`,
+    );
+    return c.json({ ok: true, key, bytes: after?.size ?? length, purge });
+  });
+
   // Delete: anyone with access may remove a file for good, after the file page's
-  // confirmation. The edge may keep resized copies for up to a day.
+  // confirmation. The edge is purged when it can be; otherwise it may keep
+  // resized copies for up to a day.
   app.post('/file/delete', async (c) => {
     const f = await c.req.parseBody();
     const key = str(f, 'key');
@@ -365,11 +507,12 @@ export function libraryRoutes(deps: AppDeps) {
       action: 'library.deleted',
       detail: { key, size: head.size, etag: head.etag },
     });
+    const purge = await purgeKeys(actor(c), [key]);
     return redirectWith(
       c,
       folderOf(key),
-      'success',
-      `Deleted ${key} from the bucket. The edge may serve resized copies for up to a day.`,
+      purge.configured && purge.error !== null ? 'warning' : 'success',
+      `Deleted ${key} from the bucket. ${purgeNote(purge)}`,
     );
   });
 
@@ -543,14 +686,39 @@ export function libraryRoutes(deps: AppDeps) {
   app.post('/rescan', async (c) => {
     if (!deps.media) return redirectWith(c, '/library', 'error', NO_STORE);
     const r = await rescan(deps.db, deps.media, layout, deps.now());
-    await logAction(deps.db, { actor: actor(c), action: 'library.rescan', detail: { ...r } });
+    await logAction(deps.db, {
+      actor: actor(c),
+      action: 'library.rescan',
+      detail: { ...r, changed: r.changed.length },
+    });
+    // Bytes replaced outside the library (rclone, the dashboard) are still the
+    // old bytes at the edge until purged, exactly as after a Replace here. A
+    // whole-bucket resync could change hundreds of keys, and each one is five
+    // purge calls, so only the first few are purged within this request: a
+    // Worker has a subrequest budget, and running out of it would fail the
+    // rescan itself. The rest refresh within a day, and the flash says so.
+    let note = '';
+    if (r.changed.length) {
+      await logAction(deps.db, {
+        actor: actor(c),
+        action: 'library.changed',
+        detail: { keys: r.changed },
+      });
+      const purged = r.changed.slice(0, RESCAN_PURGE_KEYS);
+      const purge = await purgeKeys(actor(c), purged);
+      note = ` ${purgeNote(purge)}`;
+      if (purge.configured && purge.error === null && purged.length < r.changed.length)
+        note = ` Cached copies purged for the first ${purged.length} changed keys; the rest refresh within a day.`;
+    }
     return redirectWith(
       c,
       '/library',
       'success',
       `Rescan: ${r.listed} objects listed, ${r.added} new to the library${
         r.completed ? `, ${r.completed} upload record${r.completed === 1 ? '' : 's'} completed` : ''
-      }${r.forgotten ? `, ${r.forgotten} forgotten (object gone)` : ''}.`,
+      }${r.changed.length ? `, ${r.changed.length} changed (bytes replaced outside)` : ''}${
+        r.forgotten ? `, ${r.forgotten} forgotten (object gone)` : ''
+      }.${note}`,
     );
   });
 

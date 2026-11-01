@@ -1,10 +1,17 @@
-import { menuFromLists } from '@photonrelic/media-params';
+import { menuFromLists, variantUrls } from '@photonrelic/media-params';
 import { describe, expect, it, vi } from 'vitest';
 import { recentActions } from '../src/audit.js';
 import { getAsset, listDuplicates, noteSeen, parseCaptureHeader } from '../src/library.js';
-import { layoutFromVars, subjectOf, uploadKeyPattern } from '../src/media.js';
+import { layoutFromVars, sniffImageType, subjectOf, uploadKeyPattern } from '../src/media.js';
 import type { UsageCounts, UsageReader } from '../src/usage.js';
-import { bytes, harness, ORIGIN, STAFF } from './helpers.js';
+import { bytes, fakePurge, harness, jpeg, ORIGIN, png, STAFF, sha256 } from './helpers.js';
+
+/** The flash the next page would show, from the cookie a write set. */
+const flashOf = (res: Response): string => {
+  const raw = /pr_flash=([^;]+)/.exec(res.headers.get('set-cookie') ?? '')?.[1] ?? '';
+  const json = decodeURIComponent(escape(atob(decodeURIComponent(raw))));
+  return (JSON.parse(json) as { message: string }).message;
+};
 
 /** A usage reader over a fixed table of counts; keys off the table have no hits. */
 class FakeUsage implements UsageReader {
@@ -478,7 +485,246 @@ describe('browse, file and filing', () => {
   });
 });
 
+describe('replace', () => {
+  const KEY = 'media/products/chairs/a.jpg';
+  /** An upload, filed and tagged, so a replace has something to keep. */
+  async function filed(h: ReturnType<typeof harness>) {
+    await h.put(KEY, jpeg('first'), { 'x-width': '800', 'x-height': '600' });
+    await h.form('/library/file/save', [
+      ['key', KEY],
+      ['subject', 'products/chairs'],
+      ['tags', 'hero'],
+      ['alt_default', 'A chair'],
+      ['credit', 'Studio'],
+    ]);
+    return await getAsset(h.db, KEY);
+  }
+
+  it('sniffs the web formats and nothing else', () => {
+    expect(sniffImageType(jpeg('x'))).toBe('image/jpeg');
+    expect(sniffImageType(png('x'))).toBe('image/png');
+    expect(sniffImageType(bytes('GIF89a....'))).toBe('image/gif');
+    expect(sniffImageType(bytes('RIFF....WEBPVP8 '))).toBe('image/webp');
+    expect(
+      sniffImageType(new Uint8Array([0, 0, 0, 28, ...new TextEncoder().encode('ftypavif')]).buffer),
+    ).toBe('image/avif');
+    expect(
+      sniffImageType(
+        new Uint8Array([
+          0,
+          0,
+          0,
+          24,
+          ...new TextEncoder().encode('ftypmif1'),
+          0,
+          0,
+          0,
+          0,
+          ...new TextEncoder().encode('avif'),
+        ]).buffer,
+      ),
+    ).toBe('image/avif');
+    expect(sniffImageType(bytes('<svg xmlns'))).toBeNull();
+    expect(sniffImageType(bytes(''))).toBeNull();
+  });
+
+  it('prechecks: ok, the same bytes, too big, a missing object, a key it cannot replace', async () => {
+    const h = harness();
+    await filed(h);
+    expect((await h.replacePrecheck(KEY, jpeg('second'))).answer.status).toBe('ok');
+    expect((await h.replacePrecheck(KEY, jpeg('first'))).answer.status).toBe('same-file');
+    expect((await h.replacePrecheck('media/products/none.jpg', jpeg('x'))).answer.status).toBe(
+      'missing',
+    );
+    expect((await h.replacePrecheck('private/a.jpg', jpeg('x'))).answer.status).toBe('bad-name');
+    expect((await h.replacePrecheck('media/x/a.heic', jpeg('x'))).answer.status).toBe('bad-name');
+    const big = await h.req('/library/file/replace/precheck', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key: KEY, sha256: 'a'.repeat(64), size: 20_000_000 }),
+    });
+    expect(((await big.json()) as { answer: { status: string } }).answer.status).toBe('too-big');
+    const malformed = await h.req('/library/file/replace/precheck', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key: KEY }),
+    });
+    expect(malformed.status).toBe(400);
+  });
+
+  it('refuses the same bytes, a hash that does not match, and bytes of another format', async () => {
+    const h = harness();
+    await filed(h);
+    expect((await h.replace(KEY, jpeg('first'))).status).toBe(409);
+    const lied = await h.replace(KEY, jpeg('second'), { 'x-sha256': await sha256(jpeg('other')) });
+    expect(lied.status).toBe(400);
+    expect(((await lied.json()) as { error: string }).error).toMatch(/do not match/);
+    const wrongFormat = await h.replace(KEY, png('second'));
+    expect(wrongFormat.status).toBe(415);
+    expect(((await wrongFormat.json()) as { error: string }).error).toMatch(/image\/png/);
+    expect((await h.replace('media/products/none.jpg', jpeg('x'))).status).toBe(404);
+    expect((await h.replace('private/a.jpg', jpeg('x'))).status).toBe(400);
+    const big = await h.req(`/library/file/replace?key=${encodeURIComponent(KEY)}`, {
+      method: 'PUT',
+      body: jpeg('x'),
+      headers: { 'content-length': '20000000', 'x-sha256': 'a'.repeat(64) },
+    });
+    expect(big.status).toBe(413);
+    // Nothing above touched the object.
+    expect(h.media.objects.get(KEY)?.customMetadata?.sha256).toBe(await sha256(jpeg('first')));
+    expect((await recentActions(h.db)).some((e) => e.action === 'library.replaced')).toBe(false);
+  });
+
+  it('writes over the key, keeps the filing, audits, purges and flashes', async () => {
+    const purge = fakePurge();
+    const h = harness({ purge: purge.config });
+    const before = await filed(h);
+    const next = jpeg('second');
+    const res = await h.replace(KEY, next, { 'x-width': '1200', 'x-height': '900' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; purge: { urls: number } };
+    expect(body.ok).toBe(true);
+    expect(body.purge.urls).toBe(127);
+
+    const stored = h.media.objects.get(KEY);
+    expect(new Uint8Array(stored?.bytes ?? new ArrayBuffer(0))).toEqual(new Uint8Array(next));
+    expect(stored?.customMetadata).toMatchObject({
+      sha256: await sha256(next),
+      uploadedBy: STAFF.email,
+    });
+
+    const after = await getAsset(h.db, KEY);
+    expect(after).toMatchObject({
+      subject: 'products/chairs',
+      tags: ['hero'],
+      alt_default: 'A chair',
+      credit: 'Studio',
+      first_seen: before?.first_seen,
+      sha256: await sha256(next),
+      etag: stored?.etag,
+      bytes: next.byteLength,
+      width: 1200,
+      height: 900,
+      source: 'upload',
+      uploaded_by: STAFF.email,
+    });
+    expect(after?.etag).not.toBe(before?.etag);
+
+    const audit = (await recentActions(h.db))[0];
+    expect(audit).toMatchObject({ action: 'library.replaced', actor: STAFF.email, ok: true });
+    expect(audit?.detail).toEqual({
+      key: KEY,
+      from: await sha256(jpeg('first')),
+      to: await sha256(next),
+      bytes: next.byteLength,
+    });
+    expect(purge.urls()).toEqual(variantUrls('https://img.example.com', KEY));
+    expect(purge.calls).toHaveLength(5);
+    expect(flashOf(res)).toBe(
+      `Replaced ${KEY}. Cached copies purged. Your own browser may keep its copy for up to an hour.`,
+    );
+  });
+
+  it('replaces a retired or unfiled key found in the bucket, keeping the retired state', async () => {
+    const h = harness();
+    await h.media.put('legacy/old.jpg', jpeg('found'), 'image/jpeg');
+    await h.form('/library/rescan', []);
+    await h.form('/library/file/retire', [
+      ['key', 'legacy/old.jpg'],
+      ['retired', '1'],
+      ['note', 'reshot'],
+    ]);
+    expect((await h.replace('legacy/old.jpg', jpeg('reshoot'))).status).toBe(200);
+    expect(await getAsset(h.db, 'legacy/old.jpg')).toMatchObject({
+      retired: true,
+      retired_note: 'reshot',
+      subject: null,
+      source: 'upload',
+      sha256: await sha256(jpeg('reshoot')),
+    });
+  });
+
+  it('forgets the old bytes’ capture data', async () => {
+    const h = harness();
+    await h.put(KEY, jpeg('first'), {
+      'x-width': '800',
+      'x-height': '600',
+      'x-capture': encodeURIComponent(
+        JSON.stringify({ capturedAt: '2026-05-04T13:22:10', camera: 'Canon EOS R5' }),
+      ),
+    });
+    await h.form('/library/file/save', [
+      ['key', KEY],
+      ['subject', 'products/chairs'],
+    ]);
+    expect(await getAsset(h.db, KEY)).toMatchObject({
+      captured_at: '2026-05-04T13:22:10',
+      camera: 'Canon EOS R5',
+    });
+    expect((await h.replace(KEY, jpeg('second'))).status).toBe(200);
+    expect(await getAsset(h.db, KEY)).toMatchObject({
+      subject: 'products/chairs',
+      captured_at: null,
+      camera: null,
+      lens: null,
+      original_width: null,
+      original_height: null,
+    });
+  });
+
+  it('says so without a purge, and logs a failed purge without failing the replace', async () => {
+    const h = harness();
+    await filed(h);
+    const plain = await h.replace(KEY, jpeg('second'));
+    expect(flashOf(plain)).toContain('Cached copies refresh within a day.');
+
+    const refused = fakePurge(() =>
+      Response.json(
+        { success: false, errors: [{ message: 'Authentication error' }] },
+        { status: 403 },
+      ),
+    );
+    const h2 = harness({ purge: refused.config });
+    await filed(h2);
+    const res = await h2.replace(KEY, jpeg('second'));
+    expect(res.status).toBe(200);
+    expect(flashOf(res)).toContain('The purge failed (Authentication error)');
+    const [failed, replaced] = await recentActions(h2.db);
+    expect(failed).toMatchObject({ action: 'library.purge', ok: false });
+    expect(failed?.detail).toMatchObject({ keys: [KEY], urls: 127, purged: 0 });
+    expect(replaced?.action).toBe('library.replaced');
+  });
+
+  it('shows the Replace section on the file page, but not for a retired file', async () => {
+    const h = harness();
+    await filed(h);
+    const html = await (await h.req(`/library/file?key=${KEY}`)).text();
+    expect(html).toContain('id="pr-replace"');
+    expect(html).toContain('accept=".jpg,.jpeg"');
+    expect(html).toContain('/static/pr-upload.js');
+    await h.form('/library/file/retire', [
+      ['key', KEY],
+      ['retired', '1'],
+    ]);
+    expect(await (await h.req(`/library/file?key=${KEY}`)).text()).not.toContain('id="pr-replace"');
+  });
+});
+
 describe('delete', () => {
+  it('purges the stored URL and every variant once the object is gone', async () => {
+    const purge = fakePurge();
+    const h = harness({ purge: purge.config });
+    await h.put('media/x/a.jpg', bytes('a'));
+    const res = await h.form('/library/file/delete', [
+      ['key', 'media/x/a.jpg'],
+      ['confirm', 'delete'],
+    ]);
+    expect(h.media.objects.has('media/x/a.jpg')).toBe(false);
+    expect(purge.urls()).toEqual(variantUrls('https://img.example.com', 'media/x/a.jpg'));
+    expect(purge.urls()[0]).toBe('https://img.example.com/media/x/a.jpg');
+    expect(flashOf(res)).toBe('Deleted media/x/a.jpg from the bucket. Cached copies purged.');
+  });
+
   it('needs the confirmation, then removes the object and forgets it', async () => {
     const h = harness();
     await h.put('media/x/a.jpg', bytes('a'));
@@ -542,6 +788,81 @@ describe('rescan, unfiled and duplicates', () => {
     const unfiled = await (await h.req('/library/unfiled')).text();
     expect(unfiled).toContain('found.jpg');
     expect(unfiled).not.toContain('cut.jpg');
+  });
+
+  it('notices a key whose bytes were replaced outside, forgets what it knew of them, and purges', async () => {
+    const purge = fakePurge();
+    const h = harness({ purge: purge.config });
+    await h.put('media/x/a.jpg', jpeg('first'), { 'x-width': '800', 'x-height': '600' });
+    await h.put('media/x/same.jpg', jpeg('same'));
+    await h.form('/library/file/save', [
+      ['key', 'media/x/a.jpg'],
+      ['subject', 'x'],
+      ['tags', 'hero'],
+    ]);
+    // rclone wrote over it: no stamp, a new etag.
+    await h.media.put('media/x/a.jpg', jpeg('second'), 'image/jpeg');
+    const res = await h.form('/library/rescan', []);
+    expect(flashOf(res)).toContain('1 changed (bytes replaced outside). Cached copies purged.');
+    expect(await getAsset(h.db, 'media/x/a.jpg')).toMatchObject({
+      etag: h.media.objects.get('media/x/a.jpg')?.etag,
+      bytes: jpeg('second').byteLength,
+      sha256: null,
+      width: null,
+      height: null,
+      subject: 'x',
+      tags: ['hero'],
+    });
+    expect((await getAsset(h.db, 'media/x/same.jpg'))?.sha256).toBe(await sha256(jpeg('same')));
+    expect(purge.urls()).toEqual(variantUrls('https://img.example.com', 'media/x/a.jpg'));
+    const actions = await recentActions(h.db);
+    expect(actions[0]).toMatchObject({ action: 'library.changed' });
+    expect(actions[0]?.detail).toEqual({ keys: ['media/x/a.jpg'] });
+    expect(actions[1]).toMatchObject({ action: 'library.rescan' });
+    expect(actions[1]?.detail).toMatchObject({ changed: 1, listed: 2 });
+
+    // A second rescan with nothing changed purges nothing.
+    await h.form('/library/rescan', []);
+    expect(purge.calls).toHaveLength(5);
+  });
+
+  it('purges only the first few keys a rescan finds changed, and says so', async () => {
+    const purge = fakePurge();
+    const h = harness({ purge: purge.config });
+    const keys = Array.from({ length: 10 }, (_, i) => `media/x/${i}.jpg`);
+    for (const k of keys) await h.put(k, jpeg(k));
+    // A resync wrote over all of them.
+    for (const k of keys) await h.media.put(k, jpeg(`${k} again`), 'image/jpeg');
+    const res = await h.form('/library/rescan', []);
+    expect(flashOf(res)).toContain('10 changed (bytes replaced outside).');
+    expect(flashOf(res)).toContain(
+      'Cached copies purged for the first 8 changed keys; the rest refresh within a day.',
+    );
+    const purged = new Set(
+      purge.urls().map((u) => decodeURIComponent(new URL(u).pathname.slice(1))),
+    );
+    expect(purged.size).toBe(8);
+    expect(purge.urls().length).toBe(
+      8 * variantUrls('https://img.example.com', 'media/x/0.jpg').length,
+    );
+  });
+
+  it('completes a replace that was cut off before its record, from the object’s own stamp', async () => {
+    const h = harness();
+    await h.put('media/x/a.jpg', jpeg('first'));
+    await h.media.put('media/x/a.jpg', jpeg('second'), 'image/jpeg', {
+      customMetadata: {
+        source: 'photonrelic',
+        sha256: await sha256(jpeg('second')),
+        uploadedBy: 'other@example.com',
+      },
+    });
+    await h.form('/library/rescan', []);
+    expect(await getAsset(h.db, 'media/x/a.jpg')).toMatchObject({
+      sha256: await sha256(jpeg('second')),
+      uploaded_by: 'other@example.com',
+      source: 'upload',
+    });
   });
 
   it('groups keys with the same bytes and retires all but the kept one', async () => {

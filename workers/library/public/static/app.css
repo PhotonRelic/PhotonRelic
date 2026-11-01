@@ -482,6 +482,9 @@ nav.tabs a:hover { color: var(--pr-highlight); }
 .path { word-break: break-all; }
 .delete-file { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid var(--pr-border-soft); }
 .delete-file summary { color: var(--pr-danger-text); }
+.replace-file { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid var(--pr-border-soft); }
+.replace-file summary { color: var(--pr-cta); }
+.replace-file button { width: auto; }
 .tile-select { position: absolute; top: 0.6rem; left: 0.6rem; z-index: 2; display: flex; align-items: center; gap: 0.3rem; margin: 0; padding: 0.15rem 0.45rem; background: rgba(18, 7, 31, 0.8); border: 1px solid var(--pr-border); border-radius: 4px; font-size: 0.72rem; }
 .tile-select input { margin: 0; }
 .tile-chips { margin: 0.2rem 0; }

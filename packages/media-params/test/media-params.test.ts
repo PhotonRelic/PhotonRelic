@@ -12,6 +12,7 @@ import {
   srcset,
   USAGE_INDEX_MAX_BYTES,
   usageIndex,
+  variantUrls,
 } from '../src/index.js';
 
 const u = (q: string) => new URL(`https://img.example.com/media/a/b.jpg${q}`);
@@ -201,5 +202,28 @@ describe('embed markup', () => {
     expect(html).toContain('alt="Say &quot;hi&quot; &lt;b&gt;&amp; go&lt;/b&gt;"');
     expect(html).toContain('/media/a%26b/c.jpg?w=320&amp;f=auto');
     expect(html).not.toContain('<b>');
+  });
+});
+
+describe('variantUrls', () => {
+  it('lists the stored URL and every width, crop and format, query sorted by key', () => {
+    const urls = variantUrls(
+      'https://img.example.com/',
+      'media/a b/c.jpg',
+      menuFromLists('320,768', '1:1'),
+    );
+    // 1 stored + 2 widths × (none + 1 aspect) × 3 formats.
+    expect(urls).toHaveLength(1 + 2 * 2 * 3);
+    expect(urls[0]).toBe('https://img.example.com/media/a%20b/c.jpg');
+    expect(urls).toContain('https://img.example.com/media/a%20b/c.jpg?f=avif&w=320');
+    expect(urls).toContain('https://img.example.com/media/a%20b/c.jpg?ar=1%3A1&f=jpeg&w=768');
+    expect(new Set(urls).size).toBe(urls.length);
+    expect(urls.some((u) => u.includes('f=auto'))).toBe(false);
+  });
+
+  it('covers the default menu', () => {
+    expect(variantUrls('https://img.example.com', 'media/c.jpg')).toHaveLength(
+      1 + DEFAULT_MENU.widths.length * (1 + DEFAULT_MENU.aspects.length) * 3,
+    );
   });
 });

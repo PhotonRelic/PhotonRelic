@@ -25,6 +25,10 @@ export interface Env {
    */
   MEDIA_WIDTHS?: string;
   MEDIA_ASPECTS?: string;
+  /** The zone the resizer's hostname is in; with CACHE_PURGE_TOKEN, turns the purge on. */
+  CF_ZONE_ID?: string;
+  /** A secret (`wrangler secret put`): an API token with Zone → Cache Purge → Purge. */
+  CACHE_PURGE_TOKEN?: string;
   /** Where uploads go; default `media/`. */
   UPLOAD_PREFIX?: string;
   /** Comma-separated roots the library lists; UPLOAD_PREFIX is always one. */

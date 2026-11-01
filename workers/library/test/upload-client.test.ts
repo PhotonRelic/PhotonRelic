@@ -1,14 +1,16 @@
-import { describe, expect, it } from 'vitest';
 // The browser module's pure half: key proposals, the retrying queue, the
-// manifest pairing and the EXIF reader.
+// manifest pairing, the EXIF reader and the replace checks.
+import { describe, expect, it } from 'vitest';
 import {
   captureHeader,
   exifDateToIso,
+  extensionOf,
   findManifest,
   joinCamera,
   matchManifest,
   proposeKeys,
   readCapture,
+  replaceProblem,
   runQueue,
   slugifyName,
   stripRoot,
@@ -82,6 +84,18 @@ describe('the uploader proposes keys from a dropped folder', () => {
     expect(attempts.get('broken')).toBe(3);
     expect(results.get('broken')?.ok).toBe(false);
     expect(states.filter((s) => s === 'broken:failed')).toHaveLength(1);
+  });
+
+  it('lets a replacement through only with the key’s own extension and under the cap', () => {
+    expect(extensionOf('Photo.JPEG')).toBe('jpg');
+    expect(extensionOf('media/x/a.jpg')).toBe('jpg');
+    expect(extensionOf('noext')).toBe('');
+    const key = 'media/products/chair.jpg';
+    expect(replaceProblem({ name: 'Reshoot.jpeg', size: 10 }, key, 100)).toBeNull();
+    expect(replaceProblem({ name: 'chair.png', size: 10 }, key, 100)).toMatch(
+      /a \.jpg file is needed, not \.png/,
+    );
+    expect(replaceProblem({ name: 'chair.jpg', size: 101 }, key, 100)).toMatch(/over/);
   });
 
   it('fails an item at once when the error says a retry cannot help', async () => {

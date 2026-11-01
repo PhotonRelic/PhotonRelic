@@ -421,3 +421,35 @@ export function imgMarkup(
 ): string {
   return imgTag(origin, key, o, menu, 'auto');
 }
+
+/** What the resizer can produce, and so what the edge may hold, for `f=auto` too. */
+export const MEDIA_OUTPUT_FORMATS: readonly MediaOutputFormat[] = ['avif', 'webp', 'jpeg'];
+
+/**
+ * Every URL the edge may hold for a key: the object as stored, then each
+ * width, alone and with each aspect ratio, in each output format. The resizer
+ * caches `f=auto` under the format it resolved to, with the query sorted by
+ * key, so the URLs here are written the same way (`?ar=..&f=..&w=..`) and a
+ * purge of them clears the cache whatever the request looked like.
+ */
+export function variantUrls(
+  origin: string,
+  key: string,
+  menu: ResizeMenu = DEFAULT_MENU,
+): string[] {
+  const stored = mediaUrl(origin, key);
+  const out = [stored];
+  for (const w of menu.widths) {
+    for (const ar of [null, ...menu.aspects]) {
+      for (const f of MEDIA_OUTPUT_FORMATS) {
+        const u = new URL(stored);
+        u.searchParams.set('w', String(w));
+        if (ar !== null) u.searchParams.set('ar', ar);
+        u.searchParams.set('f', f);
+        u.searchParams.sort();
+        out.push(u.toString());
+      }
+    }
+  }
+  return out;
+}

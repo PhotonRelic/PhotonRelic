@@ -90,7 +90,9 @@ pictureMarkup('https://img.example.com', 'media/products/chair.jpg', {
 - **Bucket-first.** The bucket listing is the record of what exists. D1 only holds metadata about keys. Files put in the bucket some other way (the dashboard, `rclone`, another app) appear after a **Rescan** as *unfiled*.
 - **Upload.** Drop a folder or files. Each file is hashed in the browser and prechecked before any bytes move, so the library refuses duplicates, names that are already taken, bad names and files over the cap. Files then stream straight into R2, four at a time, under `<UPLOAD_PREFIX><subject>/<name>`. If the tab closes partway, drop the same folder again and only the missing files go up.
 - **Capture data.** The prep tool strips EXIF before a file leaves your machine, so what is worth keeping travels separately: the capture date and time as the camera wrote them, the camera, the lens and the original pixel size. A prepped folder carries them in its `photonrelic-manifest.json`; the uploader reads it, sends each file's entry with the file (an `X-Capture` header of percent-encoded JSON) and never uploads the manifest itself. A file that was not prepped has its own EXIF read in the browser instead, by a small reader of PhotonRelic's own that looks at those tags only (JPEG, PNG and WebP; never GPS, serial numbers or the artist and owner fields). The file page shows what arrived under **Capture**, with the original size against the stored one. The Worker never parses image bytes, so a file that came in some other way and a **Rescan** have no capture data.
-- **Nothing is overwritten.** A key that already holds different bytes is refused. The only way to remove an object is the file page's **Delete**, and it needs a ticked confirmation.
+- **Uploads never overwrite.** A key that already holds different bytes is refused at upload. The two ways to change an object in place are both on its file page, each a person's deliberate act: **Replace** and **Delete**, which needs a ticked confirmation.
+- **Replace.** New bytes under the same key, for a reshoot or a re-edit that every page already links to. The file must have the key's own extension and be under the cap; the browser hashes it and asks first, so the same bytes again are refused as a no-op. The library checks the hash and the format (a PNG cannot go under a `.jpg` key) before it writes. The subject, tags, alt text, credit and retired state stay; the etag, hash, size and dimensions are replaced, and the audit log records the old and new hash. When a cache purge is configured (below), every copy the edge holds is purged at once; otherwise the edge keeps serving the old image for up to a day. Browsers that already have a copy may keep it for up to an hour, because the resizer sends `max-age=3600`.
+- **Cache purge.** With `CF_ZONE_ID` and the `CACHE_PURGE_TOKEN` secret set, a Replace, a Delete, and a Rescan that finds a key's bytes changed outside the library (`rclone`, the dashboard) purge the stored URL and every size on the resizer's menu from the edge, so the change shows within a minute. The library must know the resizer's menu: set `MEDIA_WIDTHS` and `MEDIA_ASPECTS` on the library too if the resizer overrides them. A purge that fails is a line in the audit log and in the flash, never an error; the write has already happened.
 - **Filing.** Select tiles and file them in bulk: subject, add or remove tags, credit, licence, expiry, and an alt-text pattern using `{name}` and `{subject}`. You see a preview before anything is applied.
 - **Search.** The box in the header, or the Search tab, finds files by any word of their path, subject, tags, default alt text or credit; the last word matches as a prefix, so results appear as you type. Results can be narrowed by subject, by tag and by state (unfiled, filed, retired), each a link beside the results with its count, and filters work with no words at all: *unfiled* with no query is the unfiled queue, *retired* is everything retired. Matches are ranked by relevance (a hit in the subject or tags outranks one in the path); without a query the newest come first. Results are tiles like the Library's, so a page of them can be selected and filed in bulk. The index is an FTS5 table in D1 kept in step by triggers, and only files the library has seen are in it: something put in the bucket some other way is found after a Rescan, which also rebuilds the index.
 - **Rights.** A file page records a licence, a source URL (http or https), restrictions, and an expiry date (`YYYY-MM-DD`, the day the rights run out). The audit row for a save lists which fields changed.
@@ -177,6 +179,13 @@ a private repo with PhotonRelic as a submodule instead, and point `main`, `asset
    ```sh
    sh scripts/deploy.sh deploy/production
    ```
+5. Optional, for the cache purge: set `CF_ZONE_ID` in `library.toml` to the zone the resizer's
+   hostname is in, and give the library a `CACHE_PURGE_TOKEN` secret: an API token with the one
+   permission Zone → Cache Purge → Purge, on that zone only. Put it in `.env` and `deploy.sh` sets
+   it with `wrangler secret put` on every deploy, or set it once by hand:
+   ```sh
+   pnpm --dir workers/library exec wrangler secret put CACHE_PURGE_TOKEN -c ../../deploy/production/library.toml
+   ```
 
 The library refuses to start without `ACCESS_AUD`, so a deployment that skipped provisioning fails closed.
 Keep the library's `LIBRARY_PREFIXES` and the resizer's `SERVED_PREFIXES` in step, so every file the library
@@ -194,7 +203,9 @@ lists can also be previewed.
 | library | `UPLOAD_PREFIX` | `media/` | Where uploads go |
 | library | `LIBRARY_PREFIXES` | `UPLOAD_PREFIX` | Comma-separated roots the library lists |
 | library | `MEDIA_ORIGIN` | unset | The resizer's origin. When unset, previews are streamed whole through the library. |
-| library | `MEDIA_WIDTHS`, `MEDIA_ASPECTS` | the menu above | The resizer's menu, for embed markup; must match the resizer's |
+| library | `MEDIA_WIDTHS`, `MEDIA_ASPECTS` | the menu above | The resizer's menu, for embed markup and so a purge covers every size the edge may hold; must match the resizer's. Unset keeps the default menu. |
+| library | `CF_ZONE_ID` | unset | The zone the resizer's hostname is in. With the token, turns the cache purge on. |
+| library | `CACHE_PURGE_TOKEN` | unset | Secret (`wrangler secret put`): an API token with Zone → Cache Purge → Purge on that zone |
 | library | `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` | unset | The Cloudflare Access application |
 | library | `CF_ACCOUNT_ID`, `ANALYTICS_TOKEN` (secret), `USAGE_DATASET` | unset, unset, `photonrelic_usage` | Reading the resizer's usage dataset; see [Usage](#usage) |
 | library | `ENVIRONMENT` | `local` | Shown as a tag in the header unless it is `production` |
