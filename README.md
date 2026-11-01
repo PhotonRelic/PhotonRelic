@@ -64,6 +64,27 @@ GET /api/v1/assets?prefix=media/products/&tag=hero&limit=50   a page, in key ord
 - Answers are cached at the edge for a minute (`s-maxage=60`) and not by browsers, so filing in the library shows up within the minute. Every answer carries `Access-Control-Allow-Origin: *`, whatever `ALLOWED_ORIGINS` says: the embed policy judges pages by their `Referer`, and a build tool sends none.
 - [`packages/media-params`](packages/media-params) exports the `AssetRecord`, `AssetResponse` and `AssetListResponse` types and the `assetUrl(origin, key)` and `assetListUrl(origin, opts)` builders, so a site can fetch the metadata with the same package it builds image URLs with.
 
+A site that builds its own markup can use `@photonrelic/media-params` for the URLs and the `<picture>`:
+
+```ts
+import { pictureMarkup, imgMarkup, srcset } from '@photonrelic/media-params';
+
+pictureMarkup('https://img.example.com', 'media/products/chair.jpg', {
+  widths: [480, 768, 1024, 1440],
+  sizes: '(min-width: 60em) 50vw, 100vw',
+  alt: 'An oak chair',
+  width: 2000, // the stored image's size, for intrinsic width and height
+  height: 1500,
+});
+// <picture>
+//   <source type="image/avif" srcset="https://img.example.com/media/products/chair.jpg?w=480&amp;f=avif 480w, …" sizes="…">
+//   <source type="image/webp" srcset="…">
+//   <img src="…?w=1440&amp;f=jpeg" srcset="…" sizes="…" alt="An oak chair" width="1440" height="1080" loading="lazy" decoding="async">
+// </picture>
+```
+
+`imgMarkup` makes a plain `<img srcset>` with `f=auto`, and `srcset` just the candidate list. Add `ar: '16:9'` for a cover crop, and pass the resizer's menu (`menuFromLists`) when it is not the default; a width or aspect off the menu throws rather than producing a 400.
+
 ## The library
 
 - **Bucket-first.** The bucket listing is the record of what exists. D1 only holds metadata about keys. Files put in the bucket some other way (the dashboard, `rclone`, another app) appear after a **Rescan** as *unfiled*.
@@ -75,6 +96,7 @@ GET /api/v1/assets?prefix=media/products/&tag=hero&limit=50   a page, in key ord
 - **Rights.** A file page records a licence, a source URL (http or https), restrictions, and an expiry date (`YYYY-MM-DD`, the day the rights run out). The audit row for a save lists which fields changed.
 - **Expiring.** The Expiring view lists files already expired and files expiring within 30 days, soonest first, each with a Retire button; the Library page shows a count when there are any. Every night at 03:00 UTC a cron run (`[triggers]` in `wrangler.toml`) retires every file whose expiry date has passed, with the note `Expired <date>`, one audit row per file as `system:expiry` and one `library.expiry_run` row for the run; the run touches only files not yet retired, so repeating it changes nothing. **Run expiry now** on the Expiring view does the same at once, and its audit row names who asked. A retired object stays in the bucket; with the resizer's database binding its URL answers 410.
 - **Duplicates.** Keys with identical bytes (matched by R2 etag or SHA-256) are grouped. Keep one and retire the rest; retired objects keep serving.
+- **Markup.** The file page offers copy-ready embed markup: tick the widths, choose an aspect and `sizes`, and copy a `<picture>` with avif and webp sources and a jpeg fallback, or a plain `<img srcset>`. The alt text is the file's default alt text, and every width and aspect comes from the resizer's menu. It needs `MEDIA_ORIGIN`; if the resizer's menu is not the default, set the library's `MEDIA_WIDTHS` and `MEDIA_ASPECTS` to the same lists.
 - **Access.** The Worker verifies the Cloudflare Access JWT itself on every request, so a misconfigured policy fails closed. Cross-site writes are refused.
 - **Usage.** With the resizer counting (above) and the library configured to read the counts, the file page shows hits over the last 7 and 30 days, Retire and Delete warn when the file was served last month, and **Unused** lists the files nothing has asked for in 90 days.
 
@@ -172,6 +194,7 @@ lists can also be previewed.
 | library | `UPLOAD_PREFIX` | `media/` | Where uploads go |
 | library | `LIBRARY_PREFIXES` | `UPLOAD_PREFIX` | Comma-separated roots the library lists |
 | library | `MEDIA_ORIGIN` | unset | The resizer's origin. When unset, previews are streamed whole through the library. |
+| library | `MEDIA_WIDTHS`, `MEDIA_ASPECTS` | the menu above | The resizer's menu, for embed markup; must match the resizer's |
 | library | `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` | unset | The Cloudflare Access application |
 | library | `CF_ACCOUNT_ID`, `ANALYTICS_TOKEN` (secret), `USAGE_DATASET` | unset, unset, `photonrelic_usage` | Reading the resizer's usage dataset; see [Usage](#usage) |
 | library | `ENVIRONMENT` | `local` | Shown as a tag in the header unless it is `production` |

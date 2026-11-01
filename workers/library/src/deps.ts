@@ -2,7 +2,7 @@
  * Everything a handler needs that is not the request. Built once per isolate
  * from the env (index.tsx) or from fakes (tests).
  */
-import { mediaUrl } from '@photonrelic/media-params';
+import { mediaUrl, type ResizeMenu } from '@photonrelic/media-params';
 import type { AccessVerifier } from './access.js';
 import type { Db } from './db.js';
 import type { MediaBucket, MediaLayout } from './media.js';
@@ -18,6 +18,8 @@ export interface AppDeps {
   mediaOrigin: string | null;
   /** Hit counts from the resizer's usage dataset; null shows "not configured". */
   usage: UsageReader | null;
+  /** The resizer's menu, which the file page's embed markup is built from. */
+  menu: ResizeMenu;
   environment: string;
   now: () => Date;
 }

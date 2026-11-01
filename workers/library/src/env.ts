@@ -18,6 +18,13 @@ export interface Env {
   ACCESS_AUD?: string;
   /** The resizer's public origin, for thumbnails; unset, previews stream through this Worker. */
   MEDIA_ORIGIN?: string;
+  /**
+   * The resizer's menu, for the file page's embed markup: the same lists as
+   * the resizer's MEDIA_WIDTHS and MEDIA_ASPECTS, and they must match, or the
+   * copied markup asks for sizes the resizer refuses. Unset keeps the default menu.
+   */
+  MEDIA_WIDTHS?: string;
+  MEDIA_ASPECTS?: string;
   /** Where uploads go; default `media/`. */
   UPLOAD_PREFIX?: string;
   /** Comma-separated roots the library lists; UPLOAD_PREFIX is always one. */

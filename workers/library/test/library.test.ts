@@ -1,3 +1,4 @@
+import { menuFromLists } from '@photonrelic/media-params';
 import { describe, expect, it, vi } from 'vitest';
 import { recentActions } from '../src/audit.js';
 import { getAsset, listDuplicates, noteSeen, parseCaptureHeader } from '../src/library.js';
@@ -348,6 +349,57 @@ describe('browse, file and filing', () => {
     expect(raw.status).toBe(200);
     expect(await raw.text()).toBe('a');
     expect((await h.req('/library/raw?key=private/a.jpg')).status).toBe(404);
+  });
+
+  it('offers copy-ready markup on the file page when the resizer is configured', async () => {
+    const h = harness();
+    await h.put('media/products/a.jpg', bytes('a'), { 'x-width': '800', 'x-height': '600' });
+    const html = await (await h.req('/library/file?key=media/products/a.jpg')).text();
+    expect(html).toContain('id="pr-markup"');
+    expect(html).toContain('/static/pr-markup.js');
+    expect(html).toContain('data-origin="https://img.example.com"');
+    expect(html).toContain('data-width="800"');
+    // The default widths are ticked; the rest of the menu is offered.
+    expect(html).toContain('name="w" value="768" checked');
+    expect(html).toContain('name="w" value="160"');
+    expect(html).not.toContain('name="w" value="160" checked');
+    expect(html).toContain('<option value="16:9">');
+    // The first rendering: avif and webp sources, a jpeg fallback, the source's size scaled.
+    expect(html).toContain('&lt;picture&gt;');
+    expect(html).toContain(
+      'https://img.example.com/media/products/a.jpg?w=480&amp;amp;f=avif 480w',
+    );
+    expect(html).toContain('width=&quot;800&quot; height=&quot;600&quot;');
+    expect(html).toContain('No default alt text yet');
+
+    await h.form('/library/file/save', [
+      ['key', 'media/products/a.jpg'],
+      ['alt_default', 'A "good" chair'],
+    ]);
+    const filed = await (await h.req('/library/file?key=media/products/a.jpg')).text();
+    expect(filed).not.toContain('No default alt text yet');
+    // The builder's entities, escaped once more by the page: the textarea shows alt="A &quot;good&quot; chair".
+    expect(filed).toContain('alt=&quot;A &amp;quot;good&amp;quot; chair&quot;');
+  });
+
+  it('offers the whole menu when none of the default widths is on it', async () => {
+    const h = harness({ menu: menuFromLists('320, 640', '2:1') });
+    await h.media.put('media/x/a.jpg', bytes('a'), 'image/jpeg');
+    const html = await (await h.req('/library/file?key=media/x/a.jpg')).text();
+    expect(html).toContain('name="w" value="320" checked');
+    expect(html).toContain('name="w" value="640" checked');
+    expect(html).not.toContain('value="768"');
+    expect(html).toContain('<option value="2:1">');
+    expect(html).not.toContain('<option value="16:9">');
+  });
+
+  it('says the markup needs the resizer when none is configured', async () => {
+    const h = harness({ mediaOrigin: null });
+    await h.media.put('media/x/a.jpg', bytes('a'), 'image/jpeg');
+    const html = await (await h.req('/library/file?key=media/x/a.jpg')).text();
+    expect(html).toContain('Embed markup needs the resizer');
+    expect(html).not.toContain('id="pr-markup"');
+    expect(html).not.toContain('pr-markup.js');
   });
 
   it('saves a file page and bulk-files with a preview step', async () => {

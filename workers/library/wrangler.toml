@@ -37,6 +37,11 @@ ACCESS_TEAM_DOMAIN = ""
 # The resizer's public origin, for thumbnails and copied URLs. Unset, previews
 # are streamed from the bucket through this Worker at full size.
 MEDIA_ORIGIN = "http://localhost:8788"
+# The resizer's menu, for the file page's embed markup. Only when the resizer's
+# wrangler.toml overrides the menu; these must match it, or the copied markup
+# asks for sizes the resizer refuses.
+# MEDIA_WIDTHS = "320,768,1440"
+# MEDIA_ASPECTS = "1:1,16:9"
 # Where uploads go: <UPLOAD_PREFIX><subject>/<name>.<ext>.
 UPLOAD_PREFIX = "media/"
 # Comma-separated prefixes the library lists. Must include UPLOAD_PREFIX, and

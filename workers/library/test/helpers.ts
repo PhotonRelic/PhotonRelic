@@ -1,3 +1,4 @@
+import { DEFAULT_MENU } from '@photonrelic/media-params';
 import { FixedIdentityVerifier, type Identity } from '../src/access.js';
 import { createApp } from '../src/app.jsx';
 import type { AppDeps } from '../src/deps.js';
@@ -24,6 +25,7 @@ export function harness(overrides: Partial<AppDeps> = {}) {
     layout: layoutFromVars('media/', 'media/, legacy/'),
     mediaOrigin: 'https://img.example.com',
     usage: null,
+    menu: DEFAULT_MENU,
     environment: 'test',
     now: () => new Date('2026-10-30T12:00:00.000Z'),
     ...overrides,
