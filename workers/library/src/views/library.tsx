@@ -83,12 +83,17 @@ function RescanButton() {
   );
 }
 
+/**
+ * Each button is its own Alpine root: Alpine only binds directives inside an
+ * `x-data` tree, and the file and duplicates pages have none around these.
+ */
 function CopyButton({ value, label }: { value: string; label: string }) {
   return (
     <button
       type="button"
       class="outline slim"
       data-copy={value}
+      x-data=""
       x-on:click="navigator.clipboard.writeText($el.dataset.copy); $el.textContent = 'Copied'"
     >
       {label}
