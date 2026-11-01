@@ -798,6 +798,27 @@ describe('rescan, unfiled and duplicates', () => {
     expect(purge.calls).toHaveLength(5);
   });
 
+  it('purges only the first few keys a rescan finds changed, and says so', async () => {
+    const purge = fakePurge();
+    const h = harness({ purge: purge.config });
+    const keys = Array.from({ length: 10 }, (_, i) => `media/x/${i}.jpg`);
+    for (const k of keys) await h.put(k, jpeg(k));
+    // A resync wrote over all of them.
+    for (const k of keys) await h.media.put(k, jpeg(`${k} again`), 'image/jpeg');
+    const res = await h.form('/library/rescan', []);
+    expect(flashOf(res)).toContain('10 changed (bytes replaced outside).');
+    expect(flashOf(res)).toContain(
+      'Cached copies purged for the first 8 changed keys; the rest refresh within a day.',
+    );
+    const purged = new Set(
+      purge.urls().map((u) => decodeURIComponent(new URL(u).pathname.slice(1))),
+    );
+    expect(purged.size).toBe(8);
+    expect(purge.urls().length).toBe(
+      8 * variantUrls('https://img.example.com', 'media/x/0.jpg').length,
+    );
+  });
+
   it('completes a replace that was cut off before its record, from the object’s own stamp', async () => {
     const h = harness();
     await h.put('media/x/a.jpg', jpeg('first'));

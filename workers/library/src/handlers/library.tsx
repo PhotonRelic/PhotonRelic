@@ -178,6 +178,9 @@ export function libraryRoutes(deps: AppDeps) {
    * flash can say truthfully whether it did. A failure is a line in the audit
    * log and in the flash, never an error page: the write already happened.
    */
+  /** Changed keys a Rescan purges within its own request: five API calls each. */
+  const RESCAN_PURGE_KEYS = 8;
+
   async function purgeKeys(who: string, keys: string[]): Promise<PurgeResult> {
     const origin = deps.mediaOrigin;
     const urls = origin ? keys.flatMap((k) => variantUrls(origin, k, deps.menu)) : [];
@@ -689,7 +692,11 @@ export function libraryRoutes(deps: AppDeps) {
       detail: { ...r, changed: r.changed.length },
     });
     // Bytes replaced outside the library (rclone, the dashboard) are still the
-    // old bytes at the edge until purged, exactly as after a Replace here.
+    // old bytes at the edge until purged, exactly as after a Replace here. A
+    // whole-bucket resync could change hundreds of keys, and each one is five
+    // purge calls, so only the first few are purged within this request: a
+    // Worker has a subrequest budget, and running out of it would fail the
+    // rescan itself. The rest refresh within a day, and the flash says so.
     let note = '';
     if (r.changed.length) {
       await logAction(deps.db, {
@@ -697,7 +704,11 @@ export function libraryRoutes(deps: AppDeps) {
         action: 'library.changed',
         detail: { keys: r.changed },
       });
-      note = ` ${purgeNote(await purgeKeys(actor(c), r.changed))}`;
+      const purged = r.changed.slice(0, RESCAN_PURGE_KEYS);
+      const purge = await purgeKeys(actor(c), purged);
+      note = ` ${purgeNote(purge)}`;
+      if (purge.configured && purge.error === null && purged.length < r.changed.length)
+        note = ` Cached copies purged for the first ${purged.length} changed keys; the rest refresh within a day.`;
     }
     return redirectWith(
       c,
