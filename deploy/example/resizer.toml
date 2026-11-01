@@ -1,6 +1,7 @@
 # The public resizer for one deployment: serves the same bucket at its own
-# hostname so the library's thumbnails and copied URLs work. Nothing here is
-# secret.
+# hostname so the library's thumbnails and copied URLs work, and reads the
+# same database for the public metadata API. The REPLACE_ value is filled in
+# by scripts/provision.sh. Nothing here is secret.
 name = "photonrelic-example-resizer"
 main = "../../workers/resizer/src/index.ts"
 compatibility_date = "2026-09-01"
@@ -22,12 +23,14 @@ SERVED_PREFIXES = "media/"
 binding = "MEDIA"
 bucket_name = "photonrelic-example-media"
 
-# Optional: the library's database (library.toml), read only, so a key whose
-# rights have expired answers 410 Gone. See workers/resizer/wrangler.toml.
-# [[d1_databases]]
-# binding = "DB"
-# database_name = "photonrelic-example"
-# database_id = "REPLACE_D1_DATABASE_ID"
+# The library's database (library.toml), read only, for the metadata API at
+# /api/v1/assets and the 410 for a key whose rights have expired. Remove this
+# block to deploy without them: the API then answers 404 `API_UNAVAILABLE`,
+# every key serves, and images are unaffected.
+[[d1_databases]]
+binding = "DB"
+database_name = "photonrelic-example"
+database_id = "REPLACE_D1_DATABASE_ID"
 
 # Without Images enabled on the account, objects are served as stored with
 # `x-media-transform: unavailable`.

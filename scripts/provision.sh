@@ -1,6 +1,7 @@
 #!/bin/sh
 # Creates what a deployment needs besides the Workers themselves, and writes
-# the resulting ids into its library.toml:
+# the resulting ids into its library.toml (and the database id into its
+# resizer.toml, when the resizer binds the database for the metadata API):
 #   - the Zero Trust organisation, if the account has none, with One-time PIN
 #   - the Access application for the library's hostname, allowing the email
 #     domains in ACCESS_ALLOWED_EMAIL_DOMAINS
@@ -85,8 +86,13 @@ if [ -n "$BUCKET" ]; then
   fi
 fi
 
-if [ -f "$LIB" ]; then
-  DB_NAME=$(toml database_name "$LIB")
+# The database is the library's; the resizer may bind the same one for its
+# metadata API, so its id is written into both files that name it.
+DB_NAME=""
+[ ! -f "$LIB" ] || DB_NAME=$(toml database_name "$LIB")
+[ -n "$DB_NAME" ] || [ ! -f "$RES" ] || DB_NAME=$(toml database_name "$RES")
+DB_ID=""
+if [ -n "$DB_NAME" ]; then
   echo "== D1 database $DB_NAME"
   dbs=$(cf GET "$A/d1/database?name=$DB_NAME")
   ok "$dbs"
@@ -99,7 +105,9 @@ if [ -f "$LIB" ]; then
     DB_ID=$(printf '%s' "$res" | json 'r.result.uuid')
     echo "   created $DB_ID"
   fi
+fi
 
+if [ -f "$LIB" ]; then
   echo "== writing $LIB"
   tmp=$(mktemp)
   sed -e "s|^ACCESS_TEAM_DOMAIN = \".*\"|ACCESS_TEAM_DOMAIN = \"$TEAM_DOMAIN\"|" \
@@ -107,5 +115,16 @@ if [ -f "$LIB" ]; then
       -e "s|^CF_ACCOUNT_ID = \".*\"|CF_ACCOUNT_ID = \"$CLOUDFLARE_ACCOUNT_ID\"|" \
       -e "s|^database_id = \".*\"|database_id = \"$DB_ID\"|" "$LIB" > "$tmp" && mv "$tmp" "$LIB"
   grep -E '^(ACCESS_TEAM_DOMAIN|ACCESS_AUD|CF_ACCOUNT_ID|database_id) ' "$LIB"
+fi
+
+if [ -f "$RES" ] && [ -n "$(toml database_name "$RES")" ]; then
+  if [ "$(toml database_name "$RES")" = "$DB_NAME" ]; then
+    echo "== writing $RES"
+    tmp=$(mktemp)
+    sed -e "s|^database_id = \".*\"|database_id = \"$DB_ID\"|" "$RES" > "$tmp" && mv "$tmp" "$RES"
+    grep -E '^database_id ' "$RES"
+  else
+    echo "$RES names database $(toml database_name "$RES"), not the library's $DB_NAME; its database_id was left alone" >&2
+  fi
 fi
 echo "done. Next: sh $ROOT/scripts/deploy.sh $ENV_DIR"

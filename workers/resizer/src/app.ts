@@ -6,6 +6,12 @@
  * input cap, or an environment without the binding, is served as stored with
  * an `x-media-transform` header saying why. With the library's database
  * bound, a key whose rights have expired answers 410 on a cache miss.
+ *
+ * GET /api/v1/assets/<key> and GET /api/v1/assets: what the library filed
+ * about a key (alt text, dimensions, credit, tags) as JSON, read from the
+ * library's database when the resizer has the binding. Sites that embed
+ * images cannot reach the library, which sits behind Access, so this is
+ * their way to the metadata.
  */
 import {
   MAX_TRANSFORM_SOURCE_BYTES,
@@ -16,8 +22,10 @@ import {
 } from '@photonrelic/media-params';
 import { type Context, Hono } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
+import { getAsset, isUnderPrefix, listAssets, parseListQuery } from './api.js';
+import type { Db } from './db.js';
 import { decideEmbed, type EmbedPolicy } from './embed.js';
-import { type ExpiryDb, isExpired } from './expiry.js';
+import { isExpired } from './expiry.js';
 import { type ImageTransformer, TransformFailed } from './images.js';
 import { isServableKey, type MediaSource } from './source.js';
 import type { UsagePoint, UsageSink } from './usage.js';
@@ -29,8 +37,12 @@ export interface ResizerDeps {
   menu: ResizeMenu;
   /** Where images may be embedded from; null is open to every page. */
   embed: EmbedPolicy | null;
-  /** The library's database, for rights expiry; absent, every key serves. */
-  db?: ExpiryDb | null;
+  /**
+   * The library's database, read only: the metadata API reads it, and a key
+   * whose rights have expired answers 410. Null: the API answers
+   * API_UNAVAILABLE and every key serves.
+   */
+  db: Db | null;
   /** Where each image served is counted; null counts nothing. */
   usage: UsageSink | null;
 }
@@ -39,6 +51,15 @@ export const CACHE_STORED = 'public, max-age=86400';
 /** Paths are not content-hashed, so transformed output is fresh for a day at the edge. */
 export const CACHE_TRANSFORMED =
   'public, s-maxage=86400, max-age=3600, stale-while-revalidate=604800';
+/**
+ * Metadata changes when someone files in the library, so the edge keeps it
+ * for a minute only, and browsers not at all: a build fetching a thousand
+ * keys in a loop is served from the edge, a page refreshed after filing sees
+ * the new alt text within the minute.
+ */
+export const CACHE_API = 'public, s-maxage=60, max-age=0';
+
+const ASSETS_PATH = '/api/v1/assets';
 
 /**
  * Every response: no sniffing, no framing, no scripts; images are loaded by
@@ -56,7 +77,9 @@ const HEADERS: Record<string, string> = {
 type ErrorCode =
   | 'NOT_FOUND'
   | 'BAD_MEDIA_PARAMS'
+  | 'BAD_REQUEST'
   | 'MEDIA_UNAVAILABLE'
+  | 'API_UNAVAILABLE'
   | 'FORBIDDEN_ORIGIN'
   | 'EXPIRED'
   | 'INTERNAL';
@@ -254,7 +277,67 @@ export function createApp(deps: ResizerDeps) {
     return res;
   };
 
+  /**
+   * A JSON answer from the metadata API, kept at the edge under the full URL
+   * like the image routes. CORS is `*` whatever ALLOWED_ORIGINS says: the
+   * embed policy judges pages by their Referer, and a build tool sends none;
+   * the answer is the same for everyone and holds nothing the library would
+   * not put in a page's alt attribute anyway.
+   */
+  const serveApi = async (c: Context, read: () => Promise<unknown | null>) => {
+    const { cache, cacheKey } = cacheFor(new URL(c.req.url).toString());
+    const hit = await cache?.match(cacheKey);
+    if (hit) return hit;
+    const body = await read();
+    if (body === null) return apiError(c, 404, 'NOT_FOUND', 'No such asset');
+    const res = new Response(JSON.stringify(body), {
+      status: 200,
+      headers: {
+        ...HEADERS,
+        'access-control-allow-origin': '*',
+        'content-type': 'application/json',
+        'cache-control': CACHE_API,
+      },
+    });
+    if (cache) void background(c, cache.put(cacheKey, res.clone()));
+    return res;
+  };
+
+  const apiUnavailable = (c: Context) =>
+    apiError(c, 404, 'API_UNAVAILABLE', 'This deployment has no metadata database');
+
   app.get('/healthz', (c) => c.json({ ok: true }, 200, { 'cache-control': 'no-store' }));
+
+  // The API routes come before the catch-all, so `api/` must not be a served prefix.
+  app.get(ASSETS_PATH, async (c) => {
+    const db = deps.db;
+    if (!db) return apiUnavailable(c);
+    const parsed = parseListQuery(new URL(c.req.url).searchParams, deps.prefixes);
+    if (parsed.kind === 'error') return apiError(c, 400, 'BAD_REQUEST', parsed.message);
+    return serveApi(c, async () => ({
+      ok: true,
+      ...(await listAssets(db, parsed.query, deps.prefixes)),
+    }));
+  });
+
+  app.get(`${ASSETS_PATH}/*`, async (c) => {
+    const db = deps.db;
+    if (!db) return apiUnavailable(c);
+    const url = new URL(c.req.url);
+    if (url.search) return apiError(c, 400, 'BAD_REQUEST', 'This route takes no parameters');
+    // Decoded the same way as the image route: the path is the key, encoded per segment.
+    let key: string;
+    try {
+      key = decodeURIComponent(url.pathname.slice(ASSETS_PATH.length + 1));
+    } catch {
+      return apiError(c, 404, 'NOT_FOUND', 'No such asset');
+    }
+    if (!isUnderPrefix(key, deps.prefixes)) return apiError(c, 404, 'NOT_FOUND', 'No such asset');
+    return serveApi(c, async () => {
+      const asset = await getAsset(db, key);
+      return asset ? { ok: true, asset } : null;
+    });
+  });
 
   app.get('/*', async (c) => {
     let allowOrigin: string | null = null;

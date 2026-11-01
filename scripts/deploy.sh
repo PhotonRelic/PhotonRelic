@@ -12,10 +12,12 @@ DRY="${2:-}"
 LIB="$ENV_DIR/library.toml"
 RES="$ENV_DIR/resizer.toml"
 
-if [ -f "$LIB" ] && grep -q '= "REPLACE_' "$LIB"; then
-  echo "$LIB still has REPLACE_ placeholders; run scripts/provision.sh first" >&2
-  [ "$DRY" = "--dry-run" ] || exit 1
-fi
+for f in "$LIB" "$RES"; do
+  if [ -f "$f" ] && grep -q '= "REPLACE_' "$f"; then
+    echo "$f still has REPLACE_ placeholders; run scripts/provision.sh first" >&2
+    [ "$DRY" = "--dry-run" ] || exit 1
+  fi
+done
 [ -d "$ROOT/node_modules" ] || pnpm --dir "$ROOT" install --frozen-lockfile
 
 # Each Worker's own wrangler, from its package. Wrangler resolves `main`,
