@@ -1,5 +1,7 @@
 # PhotonRelic
 
+[![CI](https://github.com/PhotonRelic/PhotonRelic/actions/workflows/ci.yml/badge.svg)](https://github.com/PhotonRelic/PhotonRelic/actions/workflows/ci.yml)
+
 A digital asset manager for images, built entirely on Cloudflare: R2 holds the
 files, D1 holds what you know about them, Workers serve the UI, Cloudflare
 Images resizes on request, and Cloudflare Access decides who gets in.
@@ -112,6 +114,11 @@ lists can also be previewed.
 The UI is server-rendered with [Hono](https://hono.dev) JSX, styled with [Pico CSS](https://picocss.com) plus the PhotonRelic design system in [`app.css`](workers/library/public/static/app.css) (dark only, glass surfaces, glow for elevation, Chakra Petch for text and IBM Plex Mono for every number). [Alpine.js](https://alpinejs.dev) adds the small interactions. There is no build step for the front end.
 
 Third-party components and their licences are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Contributing and security
+
+Bug reports and pull requests are welcome; [CONTRIBUTING.md](CONTRIBUTING.md) has the short version
+of how. Please report security problems privately, as described in [SECURITY.md](SECURITY.md).
 
 ## Licence
 

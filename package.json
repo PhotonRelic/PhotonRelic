@@ -9,6 +9,7 @@
     "node": ">=22.13",
     "pnpm": ">=9"
   },
+  "packageManager": "pnpm@12.15.0",
   "scripts": {
     "typecheck": "pnpm -r typecheck",
     "lint": "biome check .",

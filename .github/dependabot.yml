@@ -1,0 +1,22 @@
+# Monthly, grouped version updates for dependencies and the pinned actions.
+# Security updates are separate and arrive as soon as an advisory is published.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      dependencies:
+        patterns: ["*"]
+    commit-message:
+      prefix: "deps"
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
