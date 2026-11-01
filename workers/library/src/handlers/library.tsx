@@ -26,6 +26,10 @@ import {
   recordUpload,
   rescan,
   retireAsset,
+  SEARCH_STATES,
+  type SearchFilters,
+  searchAssets,
+  searchFacets,
   TOO_BIG,
 } from '../library.js';
 import {
@@ -45,6 +49,7 @@ import {
   FilePage,
   type LibraryStats,
   type Preview,
+  SearchPage,
   type Tile,
   UnfiledPage,
   UploadPage,
@@ -52,6 +57,10 @@ import {
 
 const SAFE_BACK = /^\/library(?:[/?#][^\s]*)?$/;
 const NO_STORE = 'No media bucket is bound to this Worker.';
+/** Tiles to a page of search results. */
+const SEARCH_PAGE = 60;
+/** Longer than any query a person types; keeps a pasted blob out of the index's parser. */
+const SEARCH_QUERY_MAX = 200;
 
 export function libraryRoutes(deps: AppDeps) {
   const app = new Hono<LibraryContext>();
@@ -136,6 +145,43 @@ export function libraryRoutes(deps: AppDeps) {
         stats={await stats()}
         preview={preview}
         error={error}
+      />,
+    );
+  });
+
+  // Search -----------------------------------------------------------------
+  // Over the rows the library knows, so a file dropped in the bucket outside the
+  // library is found once a Rescan has noted it. Reads nothing from the bucket.
+  app.get('/search', async (c) => {
+    const requested = c.req.query('state');
+    const filters: SearchFilters = {
+      q: (c.req.query('q') ?? '').trim().slice(0, SEARCH_QUERY_MAX),
+      subject: cleanSubject(c.req.query('subject') ?? '') || null,
+      tag: parseTags(c.req.query('tag') ?? '')[0] ?? null,
+      state: SEARCH_STATES.find((s) => s === requested) ?? 'all',
+    };
+    const pageNo = Math.max(1, Math.floor(Number(c.req.query('page')) || 1));
+    const [found, facets] = await Promise.all([
+      searchAssets(deps.db, filters, SEARCH_PAGE, (pageNo - 1) * SEARCH_PAGE),
+      searchFacets(deps.db, filters),
+    ]);
+    // The grid wants a listing entry per tile; the row has what the listing would say.
+    const tiles: Tile[] = found.assets.map((a) => ({
+      object: { key: a.key, size: a.bytes ?? 0, uploaded: a.first_seen, etag: a.etag },
+      asset: a,
+    }));
+    return page(
+      c,
+      deps,
+      filters.q ? `Search: ${filters.q}` : 'Search',
+      <SearchPage
+        filters={filters}
+        page={pageNo}
+        pageSize={SEARCH_PAGE}
+        total={found.total}
+        tiles={tiles}
+        facets={facets}
+        preview={preview}
       />,
     );
   });

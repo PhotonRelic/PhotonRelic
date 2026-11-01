@@ -359,6 +359,155 @@ export async function countDuplicateKeys(db: Db): Promise<number> {
 }
 
 // ---------------------------------------------------------------------------
+// Search: the FTS5 index over key, subject, tags, alt text and credit
+// ---------------------------------------------------------------------------
+
+/** unfiled and filed are both live rows; retired is its own state whatever the subject. */
+export type SearchState = 'all' | 'unfiled' | 'filed' | 'retired';
+export const SEARCH_STATES: readonly SearchState[] = ['all', 'unfiled', 'filed', 'retired'];
+
+export interface SearchFilters {
+  /** Free text; '' lists everything the filters allow, newest first. */
+  q: string;
+  subject: string | null;
+  tag: string | null;
+  state: SearchState;
+}
+
+export interface SearchPage {
+  assets: Asset[];
+  /** Matches across every page. */
+  total: number;
+}
+
+export interface Facet {
+  value: string;
+  n: number;
+}
+
+export interface SearchFacets {
+  subjects: Facet[];
+  tags: Facet[];
+}
+
+/** Subjects and tags with more than this many values show the most used ones. */
+export const FACET_SUBJECTS = 50;
+export const FACET_TAGS = 30;
+
+/**
+ * The FTS5 query for what a person typed, or null when nothing was typed. Every
+ * whitespace-separated piece becomes one quoted phrase, with the last piece a
+ * prefix so results appear as a word is typed. Inside a quoted phrase FTS5
+ * treats its operators (AND, OR, NOT, NEAR, *, ^, :) as plain text and the
+ * tokenizer splits the phrase as it split the indexed text, so nothing a
+ * person types can reach the engine as syntax, and `"foo" OR bar*` is simply
+ * the words foo, or and bar.
+ */
+export function ftsQuery(text: string): string | null {
+  const phrases = text
+    .split(/\s+/)
+    .map((piece) => piece.replace(/"/g, ''))
+    .filter((piece) => /[\p{L}\p{N}]/u.test(piece))
+    .map((piece) => `"${piece}"`);
+  if (phrases.length === 0) return null;
+  phrases[phrases.length - 1] += '*';
+  return phrases.join(' ');
+}
+
+interface SearchSql {
+  /** The source of rows: `assets`, joined to the index's matches when there is a query. */
+  from: string;
+  /** The filters, joined with AND; '' when there are none. */
+  where: string;
+  params: unknown[];
+}
+
+/**
+ * The FROM and WHERE for a search. With a query, the matched rowids and their
+ * bm25 rank come from the index (subject and tags weigh most, then alt text,
+ * then the path and credit); the filters then apply to the joined rows. A
+ * facet leaves its own filter out, so the list offers the other values.
+ */
+function searchSql(f: SearchFilters, omit: 'subject' | 'tag' | null = null): SearchSql {
+  const params: unknown[] = [];
+  const bind = (v: unknown) => {
+    params.push(v);
+    return `?${params.length}`;
+  };
+  const match = ftsQuery(f.q);
+  const from = match
+    ? `assets a JOIN (SELECT rowid, bm25(assets_fts, 1.0, 3.0, 3.0, 2.0, 1.0) AS rank
+         FROM assets_fts WHERE assets_fts MATCH ${bind(match)}) m ON m.rowid = a.rowid`
+    : 'assets a';
+  const clauses: string[] = [];
+  if (f.subject !== null && omit !== 'subject') clauses.push(`a.subject = ${bind(f.subject)}`);
+  if (f.tag !== null && omit !== 'tag')
+    clauses.push(`EXISTS (SELECT 1 FROM json_each(a.tags) WHERE value = ${bind(f.tag)})`);
+  if (f.state === 'unfiled') clauses.push('a.subject IS NULL AND a.retired = 0');
+  else if (f.state === 'filed') clauses.push('a.subject IS NOT NULL AND a.retired = 0');
+  else if (f.state === 'retired') clauses.push('a.retired = 1');
+  return { from, where: clauses.join(' AND '), params };
+}
+
+const whereOf = (...clauses: string[]) => {
+  const live = clauses.filter(Boolean);
+  return live.length ? ` WHERE ${live.join(' AND ')}` : '';
+};
+
+/** Matches by relevance when there is a query, newest first otherwise. Only keys the library knows. */
+export async function searchAssets(
+  db: Db,
+  filters: SearchFilters,
+  limit: number,
+  offset = 0,
+): Promise<SearchPage> {
+  const s = searchSql(filters);
+  const order = ftsQuery(filters.q)
+    ? 'ORDER BY m.rank, a.first_seen DESC, a.key'
+    : 'ORDER BY a.first_seen DESC, a.key';
+  const n = s.params.length;
+  const [{ results }, count] = await Promise.all([
+    db
+      .prepare(
+        `SELECT a.* FROM ${s.from}${whereOf(s.where)} ${order} LIMIT ?${n + 1} OFFSET ?${n + 2}`,
+      )
+      .bind(...s.params, limit, offset)
+      .all<AssetRow>(),
+    db
+      .prepare(`SELECT COUNT(*) AS n FROM ${s.from}${whereOf(s.where)}`)
+      .bind(...s.params)
+      .first<{ n: number }>(),
+  ]);
+  return { assets: results.map(fromRow), total: count?.n ?? 0 };
+}
+
+/** The subjects and tags among the matches, most used first, each counted without its own filter. */
+export async function searchFacets(db: Db, filters: SearchFilters): Promise<SearchFacets> {
+  const bySubject = searchSql(filters, 'subject');
+  const byTag = searchSql(filters, 'tag');
+  const [subjects, tags] = await Promise.all([
+    db
+      .prepare(
+        `SELECT a.subject AS value, COUNT(*) AS n FROM ${bySubject.from}${whereOf(
+          bySubject.where,
+          'a.subject IS NOT NULL',
+        )} GROUP BY a.subject ORDER BY n DESC, value LIMIT ?${bySubject.params.length + 1}`,
+      )
+      .bind(...bySubject.params, FACET_SUBJECTS)
+      .all<Facet>(),
+    db
+      .prepare(
+        `SELECT j.value AS value, COUNT(*) AS n FROM ${byTag.from}, json_each(a.tags) j${whereOf(
+          byTag.where,
+        )} GROUP BY j.value ORDER BY n DESC, value LIMIT ?${byTag.params.length + 1}`,
+      )
+      .bind(...byTag.params, FACET_TAGS)
+      .all<Facet>(),
+  ]);
+  return { subjects: subjects.results, tags: tags.results };
+}
+
+// ---------------------------------------------------------------------------
 // Precheck: what the browser asks before it sends bytes
 // ---------------------------------------------------------------------------
 
@@ -526,5 +675,8 @@ export async function rescan(
       .bind(...chunk)
       .run();
   }
+  // The search index is external-content: it trusts the triggers to have kept it in
+  // step. A walk of the whole bucket is the moment to make that true from scratch.
+  await db.prepare("INSERT INTO assets_fts (assets_fts) VALUES ('rebuild')").run();
   return { listed, added, completed, forgotten: gone.length };
 }
