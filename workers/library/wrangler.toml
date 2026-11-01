@@ -1,0 +1,49 @@
+# The library Worker: the media library's pages over the media bucket, with
+# metadata in D1. Nothing here is secret.
+#
+# Access: put the hostname behind a Cloudflare Access application and set
+# ACCESS_TEAM_DOMAIN and ACCESS_AUD. The Worker verifies the Access JWT on
+# every request itself, so a misconfigured policy fails closed; outside local
+# development it refuses to start without ACCESS_AUD.
+name = "photonrelic"
+main = "src/index.tsx"
+compatibility_date = "2026-09-01"
+# No workers.dev address or preview URLs: those would sit outside Access.
+workers_dev = false
+preview_urls = false
+# routes = [{ pattern = "media-admin.example.com", custom_domain = true }]
+
+# The design system, fonts and vendored libraries, served directly for
+# matching paths; everything else reaches the Worker.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[observability]
+enabled = true
+
+[vars]
+ENVIRONMENT = "local"
+# Your Zero Trust team domain, e.g. "yourteam.cloudflareaccess.com".
+ACCESS_TEAM_DOMAIN = ""
+# The Access application's Audience (AUD) tag. Unset only in local development,
+# where .dev.vars sets DEV_IDENTITY instead.
+# ACCESS_AUD = ""
+# The resizer's public origin, for thumbnails and copied URLs. Unset, previews
+# are streamed from the bucket through this Worker at full size.
+MEDIA_ORIGIN = "http://localhost:8788"
+# Where uploads go: <UPLOAD_PREFIX><subject>/<name>.<ext>.
+UPLOAD_PREFIX = "media/"
+# Comma-separated prefixes the library lists. Must include UPLOAD_PREFIX, and
+# should match the resizer's SERVED_PREFIXES so every listed file can be shown.
+LIBRARY_PREFIXES = "media/"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "photonrelic"
+database_id = "00000000-0000-0000-0000-000000000000"   # replace with `wrangler d1 create photonrelic`
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "photonrelic-media"

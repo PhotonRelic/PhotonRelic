@@ -1,0 +1,38 @@
+# The public resizer. It serves objects from the media bucket at their own
+# path (media/products/chair.jpg is GET /media/products/chair.jpg) and resizes
+# on request from the menu in packages/media-params. Nothing here is secret.
+#
+# Before deploying, set a route or custom domain for your zone below, and the
+# bucket name the library Worker uses.
+name = "photonrelic-resizer"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+# No workers.dev address or preview URLs: serve on your own hostname.
+workers_dev = false
+preview_urls = false
+
+# Either a hostname of its own...
+# routes = [{ pattern = "img.example.com", custom_domain = true }]
+# ...or a path on your site's hostname, matching SERVED_PREFIXES:
+# routes = [{ pattern = "www.example.com/media/*", zone_name = "example.com" }]
+
+[observability]
+enabled = true
+
+[vars]
+# Comma-separated key prefixes this Worker serves; everything else is a 404.
+# Keep it in step with the library's LIBRARY_PREFIXES.
+SERVED_PREFIXES = "media/"
+# Optional: override the resize menu. Unset keeps the defaults
+# (160, 320, 480, 768, 1024, 1440, 2048 and 1:1, 4:3, 3:2, 8:5, 16:9).
+# MEDIA_WIDTHS = "320,768,1440"
+# MEDIA_ASPECTS = "1:1,16:9"
+
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "photonrelic-media"
+
+# Cloudflare Images: billed per unique source-and-parameters pair per month.
+# Without it, objects are served as stored with `x-media-transform: unavailable`.
+[images]
+binding = "IMAGES"

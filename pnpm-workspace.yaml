@@ -1,0 +1,8 @@
+packages:
+  - packages/*
+  - workers/*
+
+allowBuilds:
+  esbuild: true
+  '@biomejs/biome': true
+  workerd: true

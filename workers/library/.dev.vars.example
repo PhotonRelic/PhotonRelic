@@ -1,0 +1,3 @@
+# Copy to .dev.vars for `pnpm dev`. Local development has no Access in front,
+# so every request is treated as this identity.
+DEV_IDENTITY=you@example.com
