@@ -651,7 +651,7 @@ describe('replace', () => {
     });
   });
 
-  it('forgets the old bytes’ capture data', async () => {
+  it('forgets the old bytes’ capture data and focal point', async () => {
     const h = harness();
     await h.put(KEY, jpeg('first'), {
       'x-width': '800',
@@ -664,9 +664,16 @@ describe('replace', () => {
       ['key', KEY],
       ['subject', 'products/chairs'],
     ]);
+    await h.form('/library/file/focal', [
+      ['key', KEY],
+      ['x', '0.25'],
+      ['y', '0.75'],
+    ]);
     expect(await getAsset(h.db, KEY)).toMatchObject({
       captured_at: '2026-05-04T13:22:10',
       camera: 'Canon EOS R5',
+      focal_x: 0.25,
+      focal_y: 0.75,
     });
     expect((await h.replace(KEY, jpeg('second'))).status).toBe(200);
     expect(await getAsset(h.db, KEY)).toMatchObject({
@@ -676,6 +683,8 @@ describe('replace', () => {
       lens: null,
       original_width: null,
       original_height: null,
+      focal_x: null,
+      focal_y: null,
     });
   });
 
