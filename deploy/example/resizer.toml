@@ -33,7 +33,8 @@ database_name = "photonrelic-example"
 database_id = "REPLACE_D1_DATABASE_ID"
 
 # Without Images enabled on the account, objects are served as stored with
-# `x-media-transform: unavailable`.
+# `x-media-transform: unavailable`. The account must be on Workers Paid, or a
+# page of fresh thumbnails dies on the Free plan's 10 ms CPU limit (README, Setup).
 [images]
 binding = "IMAGES"
 
