@@ -216,6 +216,12 @@ export interface AssetRecord {
   lens: string | null;
   originalWidth: number | null;
   originalHeight: number | null;
+  /**
+   * The point a cover crop keeps, as fractions of the width and height from
+   * the top-left; null when the library left it to the resizer. A site that
+   * crops with CSS can pass it straight to `object-position`.
+   */
+  focal: { x: number; y: number } | null;
 }
 
 export interface AssetResponse {

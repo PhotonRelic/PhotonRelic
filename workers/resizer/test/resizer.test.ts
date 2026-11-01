@@ -25,7 +25,12 @@ import {
   parseAllowedOrigins,
 } from '../src/embed.js';
 import { isExpired } from '../src/expiry.js';
-import { type ImageTransformer, TransformFailed, type TransformOptions } from '../src/images.js';
+import {
+  CloudflareImageTransformer,
+  type ImageTransformer,
+  TransformFailed,
+  type TransformOptions,
+} from '../src/images.js';
 import { isServableKey, MemoryMediaSource, parsePrefixes } from '../src/source.js';
 import { AnalyticsEngineUsageSink, type UsagePoint, type UsageSink } from '../src/usage.js';
 import { SqliteDb } from './sqlite.js';
@@ -126,15 +131,16 @@ function file(
     camera: string | null;
     lens: string | null;
     originalWidth: number | null;
+    focal: { x: number; y: number } | null;
   }> = {},
 ) {
   db.raw
     .prepare(
       `INSERT INTO assets (key, etag, sha256, bytes, content_type, width, height, subject, tags, alt_default, credit,
          source, first_seen, uploaded_by, filed_by, filed_at, retired, retired_note,
-         captured_at, camera, lens, original_width, original_height)
+         captured_at, camera, lens, original_width, original_height, focal_x, focal_y)
        VALUES (?, 'etag', 'sha', ?, 'image/jpeg', ?, ?, ?, ?, ?, ?, 'upload', '2026-10-01T00:00:00.000Z',
-         'someone@example.com', 'someone@example.com', '2026-10-02T00:00:00.000Z', ?, ?, ?, ?, ?, ?, ?)`,
+         'someone@example.com', 'someone@example.com', '2026-10-02T00:00:00.000Z', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       key,
@@ -152,6 +158,8 @@ function file(
       row.lens ?? null,
       row.originalWidth ?? null,
       row.originalWidth === undefined ? null : 4000,
+      row.focal?.x ?? null,
+      row.focal?.y ?? null,
     );
 }
 
@@ -250,6 +258,115 @@ describe('resized on request', () => {
     const res = await h.get('/media/workshop/bench.jpg?w=480');
     expect(res.status).toBe(502);
     expect(res.headers.get('cache-control')).toBe('no-store');
+  });
+});
+
+describe('focal point', () => {
+  const KEY = 'media/workshop/bench.jpg';
+  const withFocal = () => {
+    const db = new SqliteDb();
+    file(db, KEY, { focal: { x: 0.3, y: 0.2 } });
+    file(db, 'media/workshop/retired.jpg', { focal: { x: 0.9, y: 0.1 }, retired: true });
+    return db;
+  };
+
+  it('crops around the library’s point, and leaves the rest of the crop alone', async () => {
+    const h = harness({ db: withFocal() });
+    const res = await h.get(`/${KEY}?w=320&ar=1:1&f=jpeg`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('resized:320x320:cover');
+    expect(h.images.calls[0]).toEqual({
+      width: 320,
+      height: 320,
+      fit: 'cover',
+      format: 'image/jpeg',
+      gravity: { x: 0.3, y: 0.2 },
+    });
+  });
+
+  it('keeps a retired key’s point: it still serves wherever it is used', async () => {
+    const h = harness({ db: withFocal() });
+    h.source.put('media/workshop/retired.jpg', png(), 'image/jpeg');
+    await h.get('/media/workshop/retired.jpg?w=320&ar=1:1');
+    expect(h.images.calls[0]?.gravity).toEqual({ x: 0.9, y: 0.1 });
+  });
+
+  it('is automatic without a row, without a point, and never applies to scale-down', async () => {
+    const db = withFocal();
+    file(db, 'media/workshop/plain.jpg');
+    const h = harness({ db });
+    h.source.put('media/workshop/plain.jpg', png(), 'image/jpeg');
+    await h.get('/media/workshop/plain.jpg?w=320&ar=1:1&f=jpeg');
+    await h.get('/media/products/Chair-01ABC.PNG?w=320&ar=1:1&f=jpeg');
+    await h.get(`/${KEY}?w=320&f=jpeg`);
+    expect(h.images.calls).toEqual([
+      { width: 320, height: 320, fit: 'cover', format: 'image/jpeg' },
+      { width: 320, height: 320, fit: 'cover', format: 'image/jpeg' },
+      { width: 320, fit: 'scale-down', format: 'image/jpeg' },
+    ]);
+  });
+
+  it('is unchanged without the binding', async () => {
+    const h = harness();
+    await h.get(`/${KEY}?w=320&ar=1:1&f=jpeg`);
+    expect(h.images.calls[0]).toEqual({
+      width: 320,
+      height: 320,
+      fit: 'cover',
+      format: 'image/jpeg',
+    });
+  });
+
+  it('falls back to automatic when the database cannot answer', async () => {
+    const broken = {
+      prepare: () => ({
+        bind: () => ({
+          first: async () => {
+            throw new Error('D1_ERROR: no such column');
+          },
+          all: async () => {
+            throw new Error('D1_ERROR: no such column');
+          },
+        }),
+      }),
+    };
+    const h = harness({ db: broken as unknown as SqliteDb });
+    const res = await h.get(`/${KEY}?w=320&ar=1:1&f=jpeg`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('resized:320x320:cover');
+    expect(h.images.calls[0]?.gravity).toBeUndefined();
+  });
+
+  it('reaches the Images binding as {x, y}, and as auto without a point', async () => {
+    const seen: unknown[] = [];
+    const output = () => ({
+      response: () =>
+        new Response(new Uint8Array([1, 2, 3]), {
+          headers: { 'content-type': 'image/webp', 'content-length': '3' },
+        }),
+    });
+    const binding = {
+      input: () => ({
+        transform: (t: unknown) => {
+          seen.push(t);
+          return { output };
+        },
+      }),
+    };
+    const images = new CloudflareImageTransformer(binding as unknown as ImagesBinding);
+    const out = await images.transform(png(), {
+      width: 320,
+      height: 320,
+      fit: 'cover',
+      format: 'image/webp',
+      gravity: { x: 0.3, y: 0.2 },
+    });
+    expect(out.contentType).toBe('image/webp');
+    await images.transform(png(), { width: 320, fit: 'scale-down', format: 'image/webp' });
+    expect(seen).toEqual([
+      { width: 320, height: 320, fit: 'cover', gravity: { x: 0.3, y: 0.2 } },
+      { width: 320, fit: 'scale-down', gravity: 'auto' },
+    ]);
   });
 });
 
@@ -457,6 +574,7 @@ describe('metadata API', () => {
         lens: null,
         originalWidth: null,
         originalHeight: null,
+        focal: null,
       },
     });
   });
@@ -479,6 +597,16 @@ describe('metadata API', () => {
       originalWidth: 6000,
       originalHeight: 4000,
     });
+  });
+
+  it('carries the focal point, so a site can set object-position itself', async () => {
+    const db = filed();
+    file(db, 'media/workshop/portrait.jpg', { focal: { x: 0.42, y: 0.3 } });
+    const h = harness({ db });
+    const body = await json(await h.get('/api/v1/assets/media/workshop/portrait.jpg'));
+    expect(body.asset?.focal).toEqual({ x: 0.42, y: 0.3 });
+    const listed = await json(await h.get('/api/v1/assets?prefix=media%2Fworkshop%2Fp'));
+    expect(listed.assets?.[0]).toMatchObject({ focal: { x: 0.42, y: 0.3 } });
   });
 
   it('ignores the embed allowlist: build tools send no Referer', async () => {

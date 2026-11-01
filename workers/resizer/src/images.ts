@@ -17,6 +17,12 @@ export interface TransformOptions {
   height?: number;
   fit: 'scale-down' | 'cover';
   format: MediaOutputMime;
+  /**
+   * The point a cover crop keeps, as fractions of the source's width and
+   * height from the top-left (the library's focal point). Unset, the binding
+   * picks the crop itself (gravity auto). Meaningless for scale-down.
+   */
+  gravity?: { x: number; y: number };
 }
 
 export interface TransformResult {
@@ -42,12 +48,14 @@ export class CloudflareImageTransformer implements ImageTransformer {
     opts: TransformOptions,
   ): Promise<TransformResult> {
     const stream = input instanceof ArrayBuffer ? new Blob([input]).stream() : input;
-    const transform: {
-      width: number;
-      height?: number;
-      fit: 'scale-down' | 'cover';
-      gravity: 'auto';
-    } = { width: opts.width, fit: opts.fit, gravity: 'auto' };
+    // The binding's type wants a `mode` beside the coordinates, which the
+    // Images docs give only for `fit: crop`; a cover crop takes the bare
+    // `{x, y}` fractions the docs show, so the point is asserted past it.
+    type Gravity = NonNullable<ImageTransform['gravity']>;
+    const gravity: Gravity = opts.gravity
+      ? ({ x: opts.gravity.x, y: opts.gravity.y } as Gravity)
+      : 'auto';
+    const transform: ImageTransform = { width: opts.width, fit: opts.fit, gravity };
     if (opts.height !== undefined) transform.height = opts.height;
     let res: Response;
     let body: ArrayBuffer;

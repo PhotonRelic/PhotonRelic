@@ -32,10 +32,16 @@ interface Row {
   lens: string | null;
   original_width: number | null;
   original_height: number | null;
+  focal_x: number | null;
+  focal_y: number | null;
 }
 
 const COLUMNS =
-  'key, bytes, content_type, width, height, subject, tags, alt_default, credit, first_seen, captured_at, camera, lens, original_width, original_height';
+  'key, bytes, content_type, width, height, subject, tags, alt_default, credit, first_seen, captured_at, camera, lens, original_width, original_height, focal_x, focal_y';
+
+/** A focal point is two halves; one without the other is no point at all. */
+const focalOf = (r: { focal_x: number | null; focal_y: number | null }) =>
+  r.focal_x !== null && r.focal_y !== null ? { x: r.focal_x, y: r.focal_y } : null;
 
 function fromRow(r: Row): AssetRecord {
   let tags: string[] = [];
@@ -61,7 +67,22 @@ function fromRow(r: Row): AssetRecord {
     lens: r.lens,
     originalWidth: r.original_width,
     originalHeight: r.original_height,
+    focal: focalOf(r),
   };
+}
+
+/**
+ * The focal point for a cover crop, retired or not: a retired key still
+ * serves as an image wherever it is already used, and should still crop the
+ * way it was set. Read on the cold path only; the cached output has it baked
+ * in, and the library purges the crops when the point changes.
+ */
+export async function getFocal(db: Db, key: string): Promise<{ x: number; y: number } | null> {
+  const r = await db
+    .prepare('SELECT focal_x, focal_y FROM assets WHERE key = ?1')
+    .bind(key)
+    .first<{ focal_x: number | null; focal_y: number | null }>();
+  return r ? focalOf(r) : null;
 }
 
 /** Under one of the served prefixes, with no traversal. */

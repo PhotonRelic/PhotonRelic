@@ -2,10 +2,11 @@
  * GET /<key>: an object from the media bucket, as stored or resized on
  * request. Without parameters the object is served as stored; with ?w= (and
  * optionally ?ar= and ?f=) from the menu, the Images binding transforms it
- * and the edge cache keeps the output. A source over the binding's 20 MB
- * input cap, or an environment without the binding, is served as stored with
- * an `x-media-transform` header saying why. With the library's database
- * bound, a key whose rights have expired answers 410 on a cache miss.
+ * and the edge cache keeps the output; a cover crop keeps the focal point the
+ * library set for the key when the database is bound. A source over the
+ * binding's 20 MB input cap, or an environment without the binding, is served
+ * as stored with an `x-media-transform` header saying why. With the library's
+ * database bound, a key whose rights have expired answers 410 on a cache miss.
  *
  * GET /api/v1/assets/<key> and GET /api/v1/assets: what the library filed
  * about a key (alt text, dimensions, credit, tags) as JSON, read from the
@@ -23,7 +24,7 @@ import {
 } from '@photonrelic/media-params';
 import { type Context, Hono } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import { getAsset, isUnderPrefix, listAssets, parseListQuery } from './api.js';
+import { getAsset, getFocal, isUnderPrefix, listAssets, parseListQuery } from './api.js';
 import type { Db } from './db.js';
 import { decideEmbed, type EmbedPolicy } from './embed.js';
 import { isExpired } from './expiry.js';
@@ -248,6 +249,19 @@ export function createApp(deps: ResizerDeps) {
         format: MEDIA_MIME[params.resolved],
       };
       if (params.height !== undefined) opts.height = params.height;
+      // A cover crop keeps the library's focal point when the database is
+      // bound: one read, on the cold path only, since the cached output has
+      // the crop baked in. A database that cannot answer is not a reason to
+      // fail an image: the crop falls back to auto and the error is logged,
+      // as the API's absence is a 404 rather than a broken deployment.
+      if (params.fit === 'cover' && deps.db) {
+        try {
+          const focal = await getFocal(deps.db, key);
+          if (focal) opts.gravity = focal;
+        } catch (e) {
+          console.error('focal point read failed', key, e instanceof Error ? e.message : e);
+        }
+      }
       // One retry on a fresh read of the object covers a binding hiccup; a
       // second failure answers 502 uncached so the next request tries again
       // rather than caching a short body that shows as a broken image.

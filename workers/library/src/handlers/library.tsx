@@ -2,10 +2,10 @@
  * The media library's pages and writes, mounted under /library: the
  * bucket-first browser, one file, bulk filing, the upload page with its
  * precheck and streamed PUT, duplicates, the unfiled queue, the expiring
- * view with its run-now control, Rescan, and the two doors that change an
- * object in place: the file page's Replace (new bytes under the same key)
- * and Delete, each confirmed by the person pressing it. Both purge the edge
- * afterwards when a purge is configured.
+ * view with its run-now control, Rescan, the focal point a cover crop keeps,
+ * and the two doors that change an object in place: the file page's Replace
+ * (new bytes under the same key) and Delete, each confirmed by the person
+ * pressing it. All three purge the edge afterwards when a purge is configured.
  */
 import { variantUrls } from '@photonrelic/media-params';
 import { Hono } from 'hono';
@@ -32,6 +32,7 @@ import {
   listUnfiled,
   type PrecheckEntry,
   parseCaptureHeader,
+  parseFocal,
   parseTags,
   precheck,
   recordReplace,
@@ -44,6 +45,7 @@ import {
   type SearchFilters,
   searchAssets,
   searchFacets,
+  setFocal,
   TOO_BIG,
 } from '../library.js';
 import { markupPanel } from '../markup.js';
@@ -380,6 +382,42 @@ export function libraryRoutes(deps: AppDeps) {
       backOf(str(f, 'back', fileBack(key))),
       'success',
       retired ? 'Retired. The object stays in the bucket.' : 'Back in use.',
+    );
+  });
+
+  // Focal point: where a cover crop keeps its subject. The point is metadata,
+  // so it is written like a filing; but the resizer bakes it into every
+  // ?ar= variant it has already cached, so those are purged like a Replace.
+  // The whole menu is purged rather than the crops alone: it is one helper,
+  // one more API call, and nothing stale can be left behind by mistake.
+  app.post('/file/focal', async (c) => {
+    const f = await c.req.parseBody();
+    const key = str(f, 'key');
+    if (!isLibraryKey(layout, key) || !IMAGE_KEY.test(key))
+      return redirectWith(c, '/library', 'error', 'No such key.');
+    const parsed = parseFocal(str(f, 'x'), str(f, 'y'));
+    if (!parsed.ok) return redirectWith(c, fileBack(key), 'error', parsed.message);
+    const current = await getAsset(deps.db, key);
+    if (current?.retired)
+      return redirectWith(
+        c,
+        fileBack(key),
+        'error',
+        'A retired file is not cropped by hand; un-retire it first.',
+      );
+    const who = actor(c);
+    await setFocal(deps.db, key, parsed.focal, deps.now());
+    await logAction(deps.db, {
+      actor: who,
+      action: 'library.focal',
+      detail: { key, x: parsed.focal?.x ?? null, y: parsed.focal?.y ?? null },
+    });
+    const purge = await purgeKeys(who, [key]);
+    return redirectWith(
+      c,
+      fileBack(key),
+      purge.configured && purge.error !== null ? 'warning' : 'success',
+      `${parsed.focal ? 'Focal point saved.' : 'Focal point cleared; crops are automatic again.'} ${purgeNote(purge)}`,
     );
   });
 

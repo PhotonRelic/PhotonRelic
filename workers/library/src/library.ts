@@ -56,6 +56,9 @@ export interface AssetRow {
   lens: string | null;
   original_width: number | null;
   original_height: number | null;
+  /** Where a cover crop keeps its subject, as fractions of the width and height; both null = automatic. */
+  focal_x: number | null;
+  focal_y: number | null;
 }
 
 export interface Asset extends Omit<AssetRow, 'tags' | 'retired'> {
@@ -342,7 +345,8 @@ export function parseCaptureHeader(raw: string | undefined): ParsedCapture {
  * keeps everything a person set (subject, tags, alt text, credit, the retired
  * state) and its first_seen; what describes the bytes is replaced, and what
  * described the old bytes alone is forgotten: the capture data belonged to the
- * old file. A key with no row yet is recorded as an upload would be.
+ * old file, and a focal point chosen on the old picture would crop the new
+ * one blindly. A key with no row yet is recorded as an upload would be.
  */
 export async function recordReplace(
   db: Db,
@@ -357,7 +361,8 @@ export async function recordReplace(
        ON CONFLICT(key) DO UPDATE SET etag = excluded.etag, sha256 = excluded.sha256, bytes = excluded.bytes,
          content_type = excluded.content_type, width = excluded.width, height = excluded.height,
          source = 'upload', uploaded_by = excluded.uploaded_by,
-         captured_at = NULL, camera = NULL, lens = NULL, original_width = NULL, original_height = NULL`,
+         captured_at = NULL, camera = NULL, lens = NULL, original_width = NULL, original_height = NULL,
+         focal_x = NULL, focal_y = NULL`,
     )
     .bind(
       u.key,
@@ -566,6 +571,58 @@ export async function retireAsset(
  */
 export async function forgetAsset(db: Db, key: string): Promise<void> {
   await db.prepare('DELETE FROM assets WHERE key = ?1').bind(key).run();
+}
+
+// ---------------------------------------------------------------------------
+// Focal point: where a cover crop keeps its subject
+// ---------------------------------------------------------------------------
+
+/** A point in the image as fractions of its width and height, 0 to 1 from the top-left. */
+export interface Focal {
+  x: number;
+  y: number;
+}
+
+export type FocalParse = { ok: true; focal: Focal | null } | { ok: false; message: string };
+
+/** A fraction as the file page posts it: 0 to 1 inclusive, at most four decimals. */
+const FRACTION = /^[01](?:\.\d{1,4})?$/;
+
+/**
+ * The two fields of the focal form. Both empty is the Automatic button:
+ * the point is cleared. Four decimals is finer than any crop can show and
+ * keeps the stored value exactly what the page displayed.
+ */
+export function parseFocal(x: string, y: string): FocalParse {
+  const xs = x.trim();
+  const ys = y.trim();
+  if (xs === '' && ys === '') return { ok: true, focal: null };
+  if (xs === '' || ys === '') return { ok: false, message: 'A focal point needs both x and y.' };
+  const nx = Number(xs);
+  const ny = Number(ys);
+  if (!FRACTION.test(xs) || !FRACTION.test(ys) || nx > 1 || ny > 1)
+    return {
+      ok: false,
+      message: 'x and y must be fractions from 0 to 1 with up to four decimals.',
+    };
+  return { ok: true, focal: { x: nx, y: ny } };
+}
+
+/** The focal point a row holds, or null when either half is missing. */
+export const focalOf = (asset: Asset | null): Focal | null =>
+  asset && asset.focal_x !== null && asset.focal_y !== null
+    ? { x: asset.focal_x, y: asset.focal_y }
+    : null;
+
+/** Set or clear (null) a key's focal point. A key without a row gets one first, as unfiled. */
+export async function setFocal(db: Db, key: string, focal: Focal | null, now: Date): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO assets (key, source, first_seen, focal_x, focal_y) VALUES (?1, 'other', ?2, ?3, ?4)
+       ON CONFLICT(key) DO UPDATE SET focal_x = excluded.focal_x, focal_y = excluded.focal_y`,
+    )
+    .bind(key, now.toISOString(), focal?.x ?? null, focal?.y ?? null)
+    .run();
 }
 
 export async function listUnfiled(db: Db, limit = 500): Promise<Asset[]> {
