@@ -12,6 +12,7 @@ import type {
   SearchState,
 } from '../library.js';
 import { altFromPattern, EXPIRING_DAYS, RIGHTS_MAX, SEARCH_STATES } from '../library.js';
+import type { MarkupPanelModel } from '../markup.js';
 import {
   basenameOf,
   type MediaLayout,
@@ -753,6 +754,94 @@ function InUseWarning({ usage, verb }: { usage: UsageStatus; verb: 'Retiring' | 
   );
 }
 
+/**
+ * Copy-ready embed markup for the file. The first rendering is built on the
+ * server; pr-markup.js rebuilds it as the choices change, reading the key,
+ * origin, alt text and size from the data attributes. Alpine only does the copy.
+ */
+export function MarkupPanel({ model }: { model: MarkupPanelModel }) {
+  return (
+    <article
+      class="markup-panel"
+      id="pr-markup"
+      data-origin={model.origin}
+      data-key={model.key}
+      data-alt={model.alt}
+      data-width={model.width === null ? '' : String(model.width)}
+      data-height={model.height === null ? '' : String(model.height)}
+      x-data=""
+    >
+      <h4>Markup</h4>
+      <p>
+        <small class="muted">
+          Paste this into a page. The browser picks a width from <code>sizes</code>, the share of
+          the viewport the image takes; <code>&lt;picture&gt;</code> lets it pick the format too,
+          while a plain <code>&lt;img&gt;</code> leaves that to the resizer. Every width and aspect
+          here is on the resizer's menu, so nothing in it gets a 400.
+        </small>
+      </p>
+      <div class="markup-grid">
+        <fieldset>
+          <legend>Widths</legend>
+          {model.menu.widths.map((w) => (
+            <label>
+              <input
+                type="checkbox"
+                name="w"
+                value={String(w)}
+                checked={model.ticked.includes(w)}
+              />
+              <span class="n">{w}</span>
+            </label>
+          ))}
+        </fieldset>
+        <label>
+          Aspect
+          <select name="ar">
+            <option value="">none: scale down, own shape</option>
+            {model.menu.aspects.map((a) => (
+              <option value={a}>{a} cover crop</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          sizes
+          <input type="text" name="sizes" value="100vw" placeholder="100vw" />
+        </label>
+        <fieldset>
+          <legend>Element</legend>
+          <label>
+            <input type="radio" name="kind" value="picture" checked /> picture
+          </label>
+          <label>
+            <input type="radio" name="kind" value="img" /> img
+          </label>
+        </fieldset>
+      </div>
+      {model.alt === '' ? (
+        <p>
+          <small class="muted">
+            No default alt text yet: the markup has <code>alt=""</code>. Fill it in under Metadata
+            and save, or write it on the page.
+          </small>
+        </p>
+      ) : null}
+      <textarea name="markup" readonly rows={6} spellcheck={false} x-ref="markup">
+        {model.initial}
+      </textarea>
+      <p class="bulk-actions">
+        <button
+          type="button"
+          class="outline slim"
+          x-on:click="navigator.clipboard.writeText($refs.markup.value); $el.textContent = 'Copied'"
+        >
+          Copy markup
+        </button>
+      </p>
+    </article>
+  );
+}
+
 export function FilePage({
   objectKey: key,
   head,
@@ -762,6 +851,7 @@ export function FilePage({
   hasStore,
   today,
   usage,
+  markup,
 }: {
   objectKey: string;
   head: { size: number; contentType: string; etag: string | null } | null;
@@ -771,6 +861,8 @@ export function FilePage({
   hasStore: boolean;
   today: string;
   usage: UsageStatus;
+  /** The Markup panel's model; null when no resizer is configured. */
+  markup: MarkupPanelModel | null;
 }) {
   const filing = filingLabel(asset ?? undefined);
   return (
@@ -983,6 +1075,16 @@ export function FilePage({
           )}
         </article>
       </div>
+      {!head ? null : markup ? (
+        <MarkupPanel model={markup} />
+      ) : (
+        <p>
+          <small class="muted">
+            Embed markup needs the resizer: set <code>MEDIA_ORIGIN</code> to its origin and the file
+            page offers a copy-ready <code>&lt;picture&gt;</code>.
+          </small>
+        </p>
+      )}
     </>
   );
 }

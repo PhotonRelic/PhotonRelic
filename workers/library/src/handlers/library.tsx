@@ -40,6 +40,7 @@ import {
   searchFacets,
   TOO_BIG,
 } from '../library.js';
+import { markupPanel } from '../markup.js';
 import {
   contentTypeFor,
   isLibraryKey,
@@ -259,6 +260,7 @@ export function libraryRoutes(deps: AppDeps) {
       getAsset(deps.db, key),
       usageOf(key),
     ]);
+    const markup = head ? markupPanel(deps, key, asset) : null;
     return page(
       c,
       deps,
@@ -272,7 +274,9 @@ export function libraryRoutes(deps: AppDeps) {
         hasStore={Boolean(deps.media)}
         today={today()}
         usage={usage}
+        markup={markup}
       />,
+      { modules: markup ? ['/static/pr-markup.js'] : [] },
     );
   });
 
