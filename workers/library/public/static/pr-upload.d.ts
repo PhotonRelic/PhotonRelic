@@ -29,3 +29,28 @@ export function runQueue<T, R>(
 ): Promise<Map<T, { ok: true; value: R } | { ok: false; error: unknown }>>;
 export function chunk<T>(list: T[], size: number): T[][];
 export function fmtBytes(n: number): string;
+
+/** One file's capture entry: the manifest's, or what the browser read from EXIF. */
+export interface CaptureEntry {
+  capturedAt?: string;
+  camera?: string;
+  lens?: string;
+  originalWidth?: number;
+  originalHeight?: number;
+}
+export interface DroppedEntry {
+  relativePath: string;
+  file?: unknown;
+}
+export const MANIFEST_NAME: string;
+export function findManifest<T extends DroppedEntry>(entries: T[]): T | null;
+export function matchManifest(
+  entries: DroppedEntry[],
+  manifestPath: string,
+  manifest: unknown,
+): Map<string, CaptureEntry>;
+export function captureHeader(entry: CaptureEntry): string;
+export function exifDateToIso(s: string): string | null;
+export function joinCamera(make: string | null | undefined, model: string | null | undefined): string;
+export function readCapture(bytes: ArrayBuffer | Uint8Array): CaptureEntry;
+export function webpHasExif(bytes: ArrayBuffer | Uint8Array): boolean;
