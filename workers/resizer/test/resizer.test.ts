@@ -1,6 +1,13 @@
 import { DEFAULT_MENU, MAX_TRANSFORM_SOURCE_BYTES, menuFromLists } from '@photonrelic/media-params';
 import { describe, expect, it } from 'vitest';
 import { CACHE_STORED, CACHE_TRANSFORMED, createApp } from '../src/app.js';
+import {
+  decideEmbed,
+  type EmbedPolicy,
+  embedPolicyFromVars,
+  hostMatches,
+  parseAllowedOrigins,
+} from '../src/embed.js';
 import { type ImageTransformer, TransformFailed, type TransformOptions } from '../src/images.js';
 import { isServableKey, MemoryMediaSource, parsePrefixes } from '../src/source.js';
 
@@ -24,7 +31,14 @@ class FakeImages implements ImageTransformer {
   }
 }
 
-function harness(opts: { images?: boolean; prefixes?: string[]; menu?: typeof DEFAULT_MENU } = {}) {
+function harness(
+  opts: {
+    images?: boolean;
+    prefixes?: string[];
+    menu?: typeof DEFAULT_MENU;
+    embed?: EmbedPolicy | null;
+  } = {},
+) {
   const source = new MemoryMediaSource();
   source.put('media/workshop/bench.jpg', png(), 'image/jpeg');
   source.put('media/products/Chair-01ABC.PNG', png(), 'image/png');
@@ -36,6 +50,7 @@ function harness(opts: { images?: boolean; prefixes?: string[]; menu?: typeof DE
     images: opts.images === false ? null : images,
     prefixes: opts.prefixes ?? ['media/'],
     menu: opts.menu ?? DEFAULT_MENU,
+    embed: opts.embed ?? null,
   });
   const get = (path: string, headers: Record<string, string> = {}) =>
     app.request(`https://img.example.com${path}`, { headers });
@@ -128,6 +143,110 @@ describe('resized on request', () => {
     const res = await h.get('/media/workshop/bench.jpg?w=480');
     expect(res.status).toBe(502);
     expect(res.headers.get('cache-control')).toBe('no-store');
+  });
+});
+
+describe('embedding allowlist', () => {
+  const policy: EmbedPolicy = {
+    allowed: ['www.example.com', '*.shop.example.com', 'localhost:8787'],
+    allowEmptyReferer: true,
+  };
+
+  it('is open without a policy', async () => {
+    const h = harness();
+    const res = await h.get('/media/workshop/bench.jpg', { referer: 'https://evil.example.net/' });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('access-control-allow-origin')).toBe('*');
+    expect(res.headers.get('vary')).toBeNull();
+  });
+
+  it('serves allowed pages and echoes their origin', async () => {
+    const h = harness({ embed: policy });
+    const res = await h.get('/media/workshop/bench.jpg', {
+      referer: 'https://www.example.com/catalogue?page=2',
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://www.example.com');
+    expect(res.headers.get('vary')).toBe('Origin');
+
+    const byOrigin = await h.get('/media/workshop/bench.jpg?w=320&f=webp', {
+      origin: 'https://eu.shop.example.com',
+    });
+    expect(byOrigin.status).toBe(200);
+    expect(byOrigin.headers.get('access-control-allow-origin')).toBe('https://eu.shop.example.com');
+    expect(byOrigin.headers.get('vary')).toBe('Accept, Origin');
+
+    expect(
+      (await h.get('/media/workshop/bench.jpg', { referer: 'http://localhost:8787/' })).status,
+    ).toBe(200);
+  });
+
+  it('refuses other sites with a 403 that is not cached', async () => {
+    const h = harness({ embed: policy });
+    const res = await h.get('/media/workshop/bench.jpg', { referer: 'https://evil.example.net/' });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe('FORBIDDEN_ORIGIN');
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(h.images.calls).toHaveLength(0);
+
+    // The bare domain is not covered by `*.shop.example.com`, and Origin wins over Referer.
+    expect(
+      (await h.get('/media/workshop/bench.jpg', { referer: 'https://shop.example.com/' })).status,
+    ).toBe(403);
+    expect(
+      (
+        await h.get('/media/workshop/bench.jpg', {
+          origin: 'https://evil.example.net',
+          referer: 'https://www.example.com/',
+        })
+      ).status,
+    ).toBe(403);
+    expect((await h.get('/media/workshop/bench.jpg', { referer: 'not a url' })).status).toBe(403);
+  });
+
+  it('lets a request with no Origin or Referer through unless told not to', async () => {
+    const open = await harness({ embed: policy }).get('/media/workshop/bench.jpg');
+    expect(open.status).toBe(200);
+    expect(open.headers.get('access-control-allow-origin')).toBeNull();
+
+    const strict = harness({ embed: { ...policy, allowEmptyReferer: false } });
+    expect((await strict.get('/media/workshop/bench.jpg')).status).toBe(403);
+    expect((await strict.get('/media/workshop/bench.jpg', { origin: 'null' })).status).toBe(403);
+  });
+
+  it('matches hosts exactly, by wildcard subdomain, and by port when given', () => {
+    const u = (s: string) => new URL(s);
+    expect(hostMatches(u('https://www.example.com/x'), 'www.example.com')).toBe(true);
+    expect(hostMatches(u('https://www.example.com:8443/x'), 'www.example.com')).toBe(true);
+    expect(hostMatches(u('https://example.com/'), 'www.example.com')).toBe(false);
+    expect(hostMatches(u('https://a.b.example.com/'), '*.example.com')).toBe(true);
+    expect(hostMatches(u('https://example.com/'), '*.example.com')).toBe(false);
+    expect(hostMatches(u('https://notexample.com/'), '*.example.com')).toBe(false);
+    expect(hostMatches(u('http://localhost:8787/'), 'localhost:8787')).toBe(true);
+    expect(hostMatches(u('http://localhost:8788/'), 'localhost:8787')).toBe(false);
+    expect(decideEmbed(new Request('https://img.example.com/x'), policy)).toEqual({
+      allowed: true,
+      origin: null,
+    });
+  });
+
+  it('parses the variables and refuses malformed hosts', () => {
+    expect(parseAllowedOrigins(undefined)).toBeNull();
+    expect(parseAllowedOrigins(' ')).toBeNull();
+    expect(parseAllowedOrigins('Example.com, *.example.com ,localhost:8787')).toEqual([
+      'example.com',
+      '*.example.com',
+      'localhost:8787',
+    ]);
+    expect(() => parseAllowedOrigins('https://example.com')).toThrow();
+    expect(() => parseAllowedOrigins('example.com/path')).toThrow();
+    expect(() => parseAllowedOrigins('*example.com')).toThrow();
+    expect(embedPolicyFromVars(undefined, 'false')).toBeNull();
+    expect(embedPolicyFromVars('example.com', undefined)).toEqual({
+      allowed: ['example.com'],
+      allowEmptyReferer: true,
+    });
+    expect(embedPolicyFromVars('example.com', 'FALSE')?.allowEmptyReferer).toBe(false);
   });
 });
 

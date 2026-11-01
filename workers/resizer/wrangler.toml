@@ -27,6 +27,14 @@ SERVED_PREFIXES = "media/"
 # (160, 320, 480, 768, 1024, 1440, 2048 and 1:1, 4:3, 3:2, 8:5, 16:9).
 # MEDIA_WIDTHS = "320,768,1440"
 # MEDIA_ASPECTS = "1:1,16:9"
+# Optional: only pages on these hosts may embed images, judged by the Origin
+# then the Referer header; other sites get a 403. `*.example.com` matches
+# subdomains only, so list the bare domain too. Include the library's own
+# hostname, or its thumbnails stop loading. Unset, any page may embed.
+# ALLOWED_ORIGINS = "www.example.com, example.com, *.example.com, media-admin.example.com"
+# With ALLOWED_ORIGINS, requests that carry no Origin or Referer (a direct link,
+# an email client, a privacy browser) are let through unless this is "false".
+# ALLOW_EMPTY_REFERER = "true"
 
 [[r2_buckets]]
 binding = "MEDIA"

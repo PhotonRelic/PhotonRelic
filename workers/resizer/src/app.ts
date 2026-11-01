@@ -15,6 +15,7 @@ import {
 } from '@photonrelic/media-params';
 import { type Context, Hono } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
+import { decideEmbed, type EmbedPolicy } from './embed.js';
 import { type ImageTransformer, TransformFailed } from './images.js';
 import { isServableKey, type MediaSource } from './source.js';
 
@@ -23,6 +24,8 @@ export interface ResizerDeps {
   images: ImageTransformer | null;
   prefixes: readonly string[];
   menu: ResizeMenu;
+  /** Where images may be embedded from; null is open to every page. */
+  embed: EmbedPolicy | null;
 }
 
 export const CACHE_STORED = 'public, max-age=86400';
@@ -32,7 +35,8 @@ export const CACHE_TRANSFORMED =
 
 /**
  * Every response: no sniffing, no framing, no scripts; images are loaded by
- * other origins (a site, the library, an admin), so CORS and CORP are open.
+ * other origins (a site, the library, an admin), so CORP is open. The CORS
+ * header is added per request (see `withCors`), not cached.
  */
 const HEADERS: Record<string, string> = {
   'x-content-type-options': 'nosniff',
@@ -40,14 +44,19 @@ const HEADERS: Record<string, string> = {
   'referrer-policy': 'no-referrer',
   'content-security-policy': "default-src 'none'; frame-ancestors 'none'",
   'cross-origin-resource-policy': 'cross-origin',
-  'access-control-allow-origin': '*',
 };
 
-type ErrorCode = 'NOT_FOUND' | 'BAD_MEDIA_PARAMS' | 'MEDIA_UNAVAILABLE' | 'INTERNAL';
+type ErrorCode =
+  | 'NOT_FOUND'
+  | 'BAD_MEDIA_PARAMS'
+  | 'MEDIA_UNAVAILABLE'
+  | 'FORBIDDEN_ORIGIN'
+  | 'INTERNAL';
 
 function apiError(c: Context, status: ContentfulStatusCode, code: ErrorCode, message: string) {
   return c.json({ ok: false as const, error: { code, message } }, status, {
     ...HEADERS,
+    'access-control-allow-origin': '*',
     'cache-control': 'no-store',
   });
 }
@@ -66,6 +75,23 @@ function background(c: Context, work: Promise<unknown>): Promise<void> {
   } catch {
     return guarded;
   }
+}
+
+/**
+ * Access-Control-Allow-Origin for this request: `*` when the resizer is open,
+ * the page's own origin when it is on the allowlist, nothing when the page is
+ * unknown. Added after the cache, so a cached image never carries another
+ * page's origin, and `Vary: Origin` tells browser caches the same.
+ */
+function withCors(res: Response, allowOrigin: string | null, open: boolean): Response {
+  const out = new Response(res.body, res);
+  if (open) {
+    out.headers.set('access-control-allow-origin', '*');
+  } else {
+    if (allowOrigin) out.headers.set('access-control-allow-origin', allowOrigin);
+    out.headers.append('vary', 'Origin');
+  }
+  return out;
 }
 
 export function createApp(deps: ResizerDeps) {
@@ -172,7 +198,23 @@ export function createApp(deps: ResizerDeps) {
 
   app.get('/healthz', (c) => c.json({ ok: true }, 200, { 'cache-control': 'no-store' }));
 
-  app.get('/*', (c) => {
+  app.get('/*', async (c) => {
+    let allowOrigin: string | null = null;
+    if (deps.embed) {
+      const decision = decideEmbed(c.req.raw, deps.embed);
+      if (!decision.allowed) {
+        return apiError(
+          c,
+          403,
+          'FORBIDDEN_ORIGIN',
+          decision.reason === 'no-referer'
+            ? 'This image can only be embedded from an allowed site'
+            : 'This site may not embed this image',
+        );
+      }
+      allowOrigin = decision.origin;
+    }
+
     const url = new URL(c.req.url);
     let key: string;
     try {
@@ -184,8 +226,11 @@ export function createApp(deps: ResizerDeps) {
 
     const parsed = parseMediaParams(url, c.req.header('accept') ?? null, deps.menu);
     if (parsed.kind === 'error') return apiError(c, 400, 'BAD_MEDIA_PARAMS', parsed.message);
-    if (parsed.kind === 'transform') return serveTransformed(c, key, parsed.params);
-    return serve(c, key);
+    const res =
+      parsed.kind === 'transform'
+        ? await serveTransformed(c, key, parsed.params)
+        : await serve(c, key);
+    return withCors(res, allowOrigin, deps.embed === null);
   });
 
   app.notFound((c) => apiError(c, 404, 'NOT_FOUND', 'No such media'));

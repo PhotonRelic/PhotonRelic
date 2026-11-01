@@ -25,7 +25,8 @@ GET /media/products/chair.jpg?w=320&ar=1:1&f=webp  320 × 320 cover crop, WebP
 - Anything off the menu gets a 400. A fixed menu limits how many unique transformations anyone can request, and so limits your Images bill. To change the menu, set `MEDIA_WIDTHS` and `MEDIA_ASPECTS` in `wrangler.toml`.
 - Only keys under `SERVED_PREFIXES` with an image extension are served. SVG is never served.
 - Resized output is cached at the edge for a day (`s-maxage=86400`). A source over the Images binding's 20 MB input cap, or a deployment without the binding, is served as stored with an `x-media-transform` header saying why.
-- Every response carries `Access-Control-Allow-Origin: *` and `Cross-Origin-Resource-Policy: cross-origin`, so any site can embed the images.
+- By default any site can embed the images: every response carries `Access-Control-Allow-Origin: *` and `Cross-Origin-Resource-Policy: cross-origin`.
+- To limit embedding to your own sites, set `ALLOWED_ORIGINS` to the hosts whose pages may use the images, e.g. `www.example.com, example.com, *.example.com, media-admin.example.com`. A request is judged by its `Origin` header, then its `Referer`; a page on any other host gets a 403, and allowed pages get their own origin back in `Access-Control-Allow-Origin`. `*.example.com` matches subdomains only, so list the bare domain too, and include the library's hostname or its thumbnails stop loading. Requests with neither header (a direct link, an email client, a privacy browser) are let through unless `ALLOW_EMPTY_REFERER = "false"`. This stops other websites hotlinking your images; it does not stop anyone downloading a file and hosting it themselves, since a public image URL has to be fetchable without a login. If you would rather not configure the Worker, a WAF custom rule on the resizer's hostname that blocks requests whose `Referer` is not one of your sites does the same job from the dashboard.
 
 ## The library
 
@@ -81,6 +82,8 @@ Keep the library's `LIBRARY_PREFIXES` and the resizer's `SERVED_PREFIXES` in ste
 | --- | --- | --- | --- |
 | resizer | `SERVED_PREFIXES` | `media/` | Comma-separated key prefixes to serve |
 | resizer | `MEDIA_WIDTHS`, `MEDIA_ASPECTS` | the menu above | Comma-separated overrides for the resize menu |
+| resizer | `ALLOWED_ORIGINS` | unset (any page) | Comma-separated hosts whose pages may embed images; `*.example.com` for subdomains |
+| resizer | `ALLOW_EMPTY_REFERER` | `true` | With `ALLOWED_ORIGINS`: let requests with no `Origin` or `Referer` through |
 | library | `UPLOAD_PREFIX` | `media/` | Where uploads go |
 | library | `LIBRARY_PREFIXES` | `UPLOAD_PREFIX` | Comma-separated roots the library lists |
 | library | `MEDIA_ORIGIN` | unset | The resizer's origin. When unset, previews are streamed whole through the library. |
