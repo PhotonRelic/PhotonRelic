@@ -27,6 +27,7 @@ import {
   listExpiring,
   listUnfiled,
   type PrecheckEntry,
+  parseCaptureHeader,
   parseTags,
   precheck,
   recordUpload,
@@ -39,6 +40,7 @@ import {
   searchFacets,
   TOO_BIG,
 } from '../library.js';
+import { markupPanel } from '../markup.js';
 import {
   contentTypeFor,
   isLibraryKey,
@@ -209,6 +211,7 @@ export function libraryRoutes(deps: AppDeps) {
       q: (c.req.query('q') ?? '').trim().slice(0, SEARCH_QUERY_MAX),
       subject: cleanSubject(c.req.query('subject') ?? '') || null,
       tag: parseTags(c.req.query('tag') ?? '')[0] ?? null,
+      camera: (c.req.query('camera') ?? '').trim().slice(0, SEARCH_QUERY_MAX) || null,
       state: SEARCH_STATES.find((s) => s === requested) ?? 'all',
     };
     const pageNo = Math.max(1, Math.floor(Number(c.req.query('page')) || 1));
@@ -257,6 +260,7 @@ export function libraryRoutes(deps: AppDeps) {
       getAsset(deps.db, key),
       usageOf(key),
     ]);
+    const markup = head ? markupPanel(deps, key, asset) : null;
     return page(
       c,
       deps,
@@ -270,7 +274,9 @@ export function libraryRoutes(deps: AppDeps) {
         hasStore={Boolean(deps.media)}
         today={today()}
         usage={usage}
+        markup={markup}
       />,
+      { modules: markup ? ['/static/pr-markup.js'] : [] },
     );
   });
 
@@ -616,6 +622,11 @@ export function libraryRoutes(deps: AppDeps) {
       const n = Number(c.req.header(h) ?? 'NaN');
       return Number.isInteger(n) && n > 0 ? n : null;
     };
+    // The capture entry is a courtesy from the browser, not a condition of the
+    // upload: a bad one is logged and dropped, and the response says what was dropped.
+    const { capture, problems } = parseCaptureHeader(c.req.header('x-capture'));
+    if (problems.length) console.warn(`X-Capture for ${key} partly ignored: ${problems.join(' ')}`);
+    const warnings = problems.length ? { warnings: problems } : {};
     const record = async (head: { size: number; etag: string | null } | null, action: string) => {
       await recordUpload(
         deps.db,
@@ -629,6 +640,7 @@ export function libraryRoutes(deps: AppDeps) {
           width: num('x-width'),
           height: num('x-height'),
           uploaded_by: who,
+          capture,
         },
         deps.now(),
       );
@@ -645,7 +657,7 @@ export function libraryRoutes(deps: AppDeps) {
       // is never overwritten.
       if (existing.customMetadata?.sha256 === sha256) {
         await record(existing, 'library.upload_completed');
-        return c.json({ ok: true, key, bytes: existing.size, completed: true });
+        return c.json({ ok: true, key, bytes: existing.size, completed: true, ...warnings });
       }
       return c.json(
         {
@@ -662,7 +674,7 @@ export function libraryRoutes(deps: AppDeps) {
     });
     const head = await media.head(key);
     await record(head, 'library.uploaded');
-    return c.json({ ok: true, key, bytes: head?.size ?? length });
+    return c.json({ ok: true, key, bytes: head?.size ?? length, ...warnings });
   });
 
   // Duplicates --------------------------------------------------------------

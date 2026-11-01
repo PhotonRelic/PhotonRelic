@@ -1,6 +1,14 @@
-import { DEFAULT_MENU, MAX_TRANSFORM_SOURCE_BYTES, menuFromLists } from '@photonrelic/media-params';
+import {
+  assetListUrl,
+  assetUrl,
+  DEFAULT_MENU,
+  MAX_TRANSFORM_SOURCE_BYTES,
+  menuFromLists,
+} from '@photonrelic/media-params';
 import { describe, expect, it } from 'vitest';
-import { CACHE_STORED, CACHE_TRANSFORMED, createApp } from '../src/app.js';
+import { decodeCursor, encodeCursor } from '../src/api.js';
+import { CACHE_API, CACHE_STORED, CACHE_TRANSFORMED, createApp } from '../src/app.js';
+import type { Db, DbStatement } from '../src/db.js';
 import {
   decideEmbed,
   type EmbedPolicy,
@@ -8,31 +16,33 @@ import {
   hostMatches,
   parseAllowedOrigins,
 } from '../src/embed.js';
-import { type ExpiryDb, isExpired } from '../src/expiry.js';
+import { isExpired } from '../src/expiry.js';
 import { type ImageTransformer, TransformFailed, type TransformOptions } from '../src/images.js';
 import { isServableKey, MemoryMediaSource, parsePrefixes } from '../src/source.js';
 import { AnalyticsEngineUsageSink, type UsagePoint, type UsageSink } from '../src/usage.js';
+import { SqliteDb } from './sqlite.js';
 
 /** The first bytes of a PNG, enough to be a distinct stored object. */
 const png = () => new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3]).buffer as ArrayBuffer;
 
 /** The library's `assets` table, reduced to key and expiry, answering the one query the resizer makes. */
-class FakeDb implements ExpiryDb {
+class FakeDb implements Db {
   readonly expiries = new Map<string, string | null>();
   queries = 0;
   failing = false;
-  prepare(_sql: string) {
-    return {
-      bind: (...values: unknown[]) => ({
-        first: async <T>(): Promise<T | null> => {
-          this.queries += 1;
-          if (this.failing) throw new Error('D1 is away');
-          const [key, today] = values as [string, string];
-          const expiresAt = this.expiries.get(key);
-          return expiresAt && expiresAt < today ? ({ gone: 1 } as T) : null;
-        },
-      }),
-    };
+  prepare(_sql: string): DbStatement {
+    const statement = (values: unknown[]): DbStatement => ({
+      bind: (...bound: unknown[]) => statement(bound),
+      first: async <T>(): Promise<T | null> => {
+        this.queries += 1;
+        if (this.failing) throw new Error('D1 is away');
+        const [key, today] = values as [string, string];
+        const expiresAt = this.expiries.get(key);
+        return expiresAt && expiresAt < today ? ({ gone: 1 } as T) : null;
+      },
+      all: async <T>(): Promise<{ results: T[] }> => ({ results: [] }),
+    });
+    return statement([]);
   }
 }
 
@@ -66,7 +76,7 @@ function harness(
     prefixes?: string[];
     menu?: typeof DEFAULT_MENU;
     embed?: EmbedPolicy | null;
-    db?: FakeDb;
+    db?: Db | null;
     usage?: boolean;
   } = {},
 ) {
@@ -90,6 +100,61 @@ function harness(
     app.request(`https://img.example.com${path}`, { headers });
   return { source, images, usage, get };
 }
+
+/** A row as the library would file it; only what the test names differs from the defaults. */
+function file(
+  db: SqliteDb,
+  key: string,
+  row: Partial<{
+    subject: string | null;
+    tags: string[];
+    alt: string;
+    credit: string | null;
+    width: number | null;
+    height: number | null;
+    bytes: number | null;
+    retired: boolean;
+    capturedAt: string | null;
+    camera: string | null;
+    lens: string | null;
+    originalWidth: number | null;
+  }> = {},
+) {
+  db.raw
+    .prepare(
+      `INSERT INTO assets (key, etag, sha256, bytes, content_type, width, height, subject, tags, alt_default, credit,
+         source, first_seen, uploaded_by, filed_by, filed_at, retired, retired_note,
+         captured_at, camera, lens, original_width, original_height)
+       VALUES (?, 'etag', 'sha', ?, 'image/jpeg', ?, ?, ?, ?, ?, ?, 'upload', '2026-10-01T00:00:00.000Z',
+         'someone@example.com', 'someone@example.com', '2026-10-02T00:00:00.000Z', ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      key,
+      row.bytes === undefined ? 12345 : row.bytes,
+      row.width === undefined ? 1600 : row.width,
+      row.height === undefined ? 1200 : row.height,
+      row.subject === undefined ? 'workshop' : row.subject,
+      JSON.stringify(row.tags ?? []),
+      row.alt ?? '',
+      row.credit === undefined ? null : row.credit,
+      row.retired ? 1 : 0,
+      row.retired ? 'duplicate' : null,
+      row.capturedAt ?? null,
+      row.camera ?? null,
+      row.lens ?? null,
+      row.originalWidth ?? null,
+      row.originalWidth === undefined ? null : 4000,
+    );
+}
+
+const json = async (res: Response) =>
+  (await res.json()) as {
+    ok: boolean;
+    error?: { code: string; message: string };
+    asset?: Record<string, unknown>;
+    assets?: { key: string }[];
+    cursor?: string | null;
+  };
 
 describe('served as stored', () => {
   it('serves objects under a served prefix and nothing else', async () => {
@@ -328,6 +393,215 @@ describe('rights expiry', () => {
     expect(await isExpired(db, 'media/a.jpg', '2026-10-30')).toBe(true);
     expect(await isExpired(db, 'media/a.jpg', '2026-10-29')).toBe(false);
     expect(await isExpired(db, 'media/b.jpg', '2026-10-30')).toBe(false);
+  });
+});
+
+describe('metadata API', () => {
+  const KEY = 'media/workshop/bench.jpg';
+  const filed = () => {
+    const db = new SqliteDb();
+    file(db, KEY, {
+      tags: ['hero', 'wood'],
+      alt: 'A workbench under a window',
+      credit: 'Studio',
+    });
+    file(db, 'media/workshop/old-bench.jpg', { retired: true });
+    file(db, 'private/secret.jpg');
+    return db;
+  };
+
+  it('answers 404 without the binding, and images are unaffected', async () => {
+    const h = harness();
+    const res = await h.get(`/api/v1/assets/${KEY}`);
+    expect(res.status).toBe(404);
+    const body = await json(res);
+    expect(body.error?.code).toBe('API_UNAVAILABLE');
+    expect(body.error?.message).toMatch(/no metadata database/);
+    expect((await h.get('/api/v1/assets')).status).toBe(404);
+    expect((await json(await h.get('/api/v1/assets'))).error?.code).toBe('API_UNAVAILABLE');
+    expect((await h.get(`/${KEY}`)).status).toBe(200);
+  });
+
+  it('returns what the library filed about a key, with CORS and cache headers', async () => {
+    const h = harness({ db: filed() });
+    const res = await h.get(`/api/v1/assets/${KEY}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('application/json');
+    expect(res.headers.get('cache-control')).toBe(CACHE_API);
+    expect(res.headers.get('access-control-allow-origin')).toBe('*');
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(res.headers.get('content-security-policy')).toContain("default-src 'none'");
+    expect(await res.json()).toEqual({
+      ok: true,
+      asset: {
+        key: KEY,
+        bytes: 12345,
+        contentType: 'image/jpeg',
+        width: 1600,
+        height: 1200,
+        subject: 'workshop',
+        tags: ['hero', 'wood'],
+        alt: 'A workbench under a window',
+        credit: 'Studio',
+        firstSeen: '2026-10-01T00:00:00.000Z',
+        capturedAt: null,
+        camera: null,
+        lens: null,
+        originalWidth: null,
+        originalHeight: null,
+      },
+    });
+  });
+
+  it('includes the capture data an upload recorded', async () => {
+    const db = filed();
+    file(db, 'media/workshop/lathe.jpg', {
+      capturedAt: '2026-05-30T14:55:50',
+      camera: 'NIKON Z 7',
+      lens: 'NIKKOR Z 85mm f/1.8 S',
+      originalWidth: 6000,
+    });
+    const h = harness({ db });
+    expect(
+      (await json(await h.get('/api/v1/assets/media/workshop/lathe.jpg'))).asset,
+    ).toMatchObject({
+      capturedAt: '2026-05-30T14:55:50',
+      camera: 'NIKON Z 7',
+      lens: 'NIKKOR Z 85mm f/1.8 S',
+      originalWidth: 6000,
+      originalHeight: 4000,
+    });
+  });
+
+  it('ignores the embed allowlist: build tools send no Referer', async () => {
+    const policy: EmbedPolicy = { allowed: ['www.example.com'], allowEmptyReferer: false };
+    const h = harness({ db: filed(), embed: policy });
+    const res = await h.get(`/api/v1/assets/${KEY}`, { referer: 'https://evil.example.net/' });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('access-control-allow-origin')).toBe('*');
+    expect((await h.get(`/${KEY}`, { referer: 'https://evil.example.net/' })).status).toBe(403);
+  });
+
+  it('does not find retired keys, unknown keys or keys outside the served prefixes', async () => {
+    const h = harness({ db: filed() });
+    for (const path of [
+      '/api/v1/assets/media/workshop/old-bench.jpg',
+      '/api/v1/assets/media/workshop/missing.jpg',
+      '/api/v1/assets/private/secret.jpg',
+      '/api/v1/assets/media/../private/secret.jpg',
+      '/api/v1/assets/',
+      '/api/v1/assets/%E0%A4%A',
+    ]) {
+      const res = await h.get(path);
+      expect(res.status, path).toBe(404);
+      expect((await json(res)).error?.code, path).toBe('NOT_FOUND');
+    }
+    // Retired keys still serve as images.
+    h.source.put('media/workshop/old-bench.jpg', png(), 'image/jpeg');
+    expect((await h.get('/media/workshop/old-bench.jpg')).status).toBe(200);
+    expect((await h.get(`/api/v1/assets/${KEY}?v=2`)).status).toBe(400);
+  });
+
+  it('decodes keys with spaces and unicode the way mediaUrl encodes them', async () => {
+    const db = filed();
+    const key = 'media/workshop/café bench — 2.jpg';
+    file(db, key, { alt: 'Café bench' });
+    const h = harness({ db });
+    const res = await h.get(assetUrl('', key));
+    expect(res.status).toBe(200);
+    expect((await json(res)).asset?.alt).toBe('Café bench');
+  });
+
+  it('lists assets in key order, filtered by prefix, subject and tag', async () => {
+    const db = filed();
+    file(db, 'media/products/chair.jpg', { subject: 'products', tags: ['hero', 'oak'] });
+    file(db, 'media/products/table.jpg', { subject: 'products', tags: ['oak'] });
+    file(db, 'media/products/stool.jpg', { subject: 'products', tags: [], retired: true });
+    const h = harness({ db });
+    const keys = async (path: string) => (await json(await h.get(path))).assets?.map((a) => a.key);
+
+    const all = await h.get('/api/v1/assets');
+    expect(all.status).toBe(200);
+    expect(all.headers.get('cache-control')).toBe(CACHE_API);
+    expect(all.headers.get('access-control-allow-origin')).toBe('*');
+    expect(await json(all)).toMatchObject({ ok: true, cursor: null });
+    expect(await keys('/api/v1/assets')).toEqual([
+      'media/products/chair.jpg',
+      'media/products/table.jpg',
+      KEY,
+    ]);
+    expect(await keys('/api/v1/assets?prefix=media%2Fproducts%2F')).toEqual([
+      'media/products/chair.jpg',
+      'media/products/table.jpg',
+    ]);
+    expect(await keys('/api/v1/assets?subject=workshop')).toEqual([KEY]);
+    expect(await keys('/api/v1/assets?tag=hero')).toEqual(['media/products/chair.jpg', KEY]);
+    expect(
+      await keys('/api/v1/assets?tag=oak&subject=products&prefix=media%2Fproducts%2Ft'),
+    ).toEqual(['media/products/table.jpg']);
+    expect(await keys('/api/v1/assets?tag=nothing')).toEqual([]);
+  });
+
+  it('lists every served prefix and nothing outside them', async () => {
+    const db = filed();
+    file(db, 'assets/web/logo.png', { subject: null });
+    const h = harness({ db, prefixes: ['media/', 'assets/web/'] });
+    const body = await json(await h.get('/api/v1/assets'));
+    expect(body.assets?.map((a) => a.key)).toEqual(['assets/web/logo.png', KEY]);
+  });
+
+  it('pages with an opaque keyset cursor', async () => {
+    const db = new SqliteDb();
+    for (let i = 0; i < 5; i++) file(db, `media/workshop/shot-${i}.jpg`);
+    const h = harness({ db });
+    const first = await json(await h.get('/api/v1/assets?limit=2'));
+    expect(first.assets?.map((a) => a.key)).toEqual([
+      'media/workshop/shot-0.jpg',
+      'media/workshop/shot-1.jpg',
+    ]);
+    expect(first.cursor).toBe(encodeCursor('media/workshop/shot-1.jpg'));
+    const second = await json(
+      await h.get(assetListUrl('', { limit: 2, cursor: first.cursor ?? '' })),
+    );
+    expect(second.assets?.map((a) => a.key)).toEqual([
+      'media/workshop/shot-2.jpg',
+      'media/workshop/shot-3.jpg',
+    ]);
+    const third = await json(await h.get(`/api/v1/assets?limit=2&cursor=${second.cursor}`));
+    expect(third.assets?.map((a) => a.key)).toEqual(['media/workshop/shot-4.jpg']);
+    expect(third.cursor).toBeNull();
+    // Exactly a page's worth has no next page.
+    expect((await json(await h.get('/api/v1/assets?limit=5'))).cursor).toBeNull();
+  });
+
+  it('refuses a prefix outside the served ones, a bad limit, a bad cursor and unknown parameters', async () => {
+    const h = harness({ db: filed() });
+    for (const q of [
+      'prefix=private%2F',
+      'prefix=media%2F..%2Fprivate%2F',
+      'limit=0',
+      'limit=501',
+      'limit=ten',
+      'cursor=not%20base64',
+      'cursor=gA',
+      'q=chair',
+    ]) {
+      const res = await h.get(`/api/v1/assets?${q}`);
+      expect(res.status, q).toBe(400);
+      const body = await json(res);
+      expect(body.error?.code, q).toBe('BAD_REQUEST');
+      expect(res.headers.get('cache-control')).toBe('no-store');
+    }
+    expect((await h.get('/api/v1/assets?limit=500')).status).toBe(200);
+  });
+
+  it('round-trips any key through the cursor', () => {
+    for (const key of ['media/a.jpg', 'media/café bench — 2.jpg', 'media/\u{1F4F7}.jpg']) {
+      expect(decodeCursor(encodeCursor(key))).toBe(key);
+      expect(encodeCursor(key)).toMatch(/^[A-Za-z0-9_-]+$/);
+    }
+    expect(decodeCursor('')).toBeNull();
+    expect(decodeCursor('a b')).toBeNull();
   });
 });
 

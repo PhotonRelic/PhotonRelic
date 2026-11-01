@@ -185,3 +185,239 @@ export function usageIndex(key: string): string {
   for (const b of bytes) h = ((h ^ BigInt(b)) * 0x100000001b3n) & 0xffffffffffffffffn;
   return `#${h.toString(16).padStart(16, '0')}`;
 }
+
+/**
+ * The resizer's public metadata API: `GET /api/v1/assets/<key>` and
+ * `GET /api/v1/assets?prefix=&subject=&tag=&limit=&cursor=`. A site that
+ * embeds images can fetch alt text, dimensions and credit for a key without
+ * going through the library, which sits behind Access. Read only, and only
+ * what the library filed: no audit trail, no identities.
+ */
+export interface AssetRecord {
+  key: string;
+  bytes: number | null;
+  contentType: string | null;
+  width: number | null;
+  height: number | null;
+  subject: string | null;
+  tags: string[];
+  alt: string;
+  credit: string | null;
+  /** ISO 8601, when the library first saw the key. */
+  firstSeen: string;
+  /**
+   * What the upload recorded about the original before the prep tool stripped
+   * its tags: the capture date as the camera wrote it (no timezone guessed),
+   * the camera's make and model, the lens, and the pixel size before any
+   * resize. Null when nothing was recorded; a Rescan never fills these.
+   */
+  capturedAt: string | null;
+  camera: string | null;
+  lens: string | null;
+  originalWidth: number | null;
+  originalHeight: number | null;
+}
+
+export interface AssetResponse {
+  ok: true;
+  asset: AssetRecord;
+}
+
+export interface AssetListResponse {
+  ok: true;
+  assets: AssetRecord[];
+  /** Pass back as `cursor` for the next page; null on the last page. */
+  cursor: string | null;
+}
+
+export interface AssetListQuery {
+  /** A key prefix under the resizer's served prefixes; unset lists them all. */
+  prefix?: string;
+  subject?: string;
+  tag?: string;
+  /** 1 to 500; the resizer's default is 100. */
+  limit?: number;
+  cursor?: string;
+}
+
+export const ASSETS_PATH = '/api/v1/assets';
+
+/** The metadata URL for a key, encoded per segment like `mediaUrl`. */
+export function assetUrl(origin: string, key: string): string {
+  const path = key.split('/').map(encodeURIComponent).join('/');
+  return `${origin.replace(/\/$/, '')}${ASSETS_PATH}/${path}`;
+}
+
+/** The listing URL; only the filters given appear in the query string. */
+export function assetListUrl(origin: string, opts: AssetListQuery = {}): string {
+  const q = new URLSearchParams();
+  if (opts.prefix !== undefined) q.set('prefix', opts.prefix);
+  if (opts.subject !== undefined) q.set('subject', opts.subject);
+  if (opts.tag !== undefined) q.set('tag', opts.tag);
+  if (opts.limit !== undefined) q.set('limit', String(opts.limit));
+  if (opts.cursor !== undefined) q.set('cursor', opts.cursor);
+  const base = `${origin.replace(/\/$/, '')}${ASSETS_PATH}`;
+  const s = q.toString();
+  return s ? `${base}?${s}` : base;
+}
+
+// Embed markup ---------------------------------------------------------------
+
+/** The widths a srcset may use: on the menu, deduplicated, ascending. */
+function menuWidths(widths: readonly number[], menu: ResizeMenu): number[] {
+  const out = [...new Set(widths)].sort((p, q) => p - q);
+  if (out.length === 0) throw new Error('Choose at least one width');
+  for (const w of out) {
+    if (!menu.widths.includes(w)) throw new Error(`w must be one of ${menu.widths.join(', ')}`);
+  }
+  return out;
+}
+
+function menuAspect(ar: string | undefined, menu: ResizeMenu): string | undefined {
+  if (ar === undefined || ar === '') return undefined;
+  if (!menu.aspects.includes(ar)) throw new Error(`ar must be one of ${menu.aspects.join(', ')}`);
+  return ar;
+}
+
+/**
+ * A `srcset` for a key: one candidate per width, each with its width
+ * descriptor. Every width (and the aspect) must be on the menu, or the
+ * resizer would answer 400 for that candidate.
+ */
+export function srcset(
+  origin: string,
+  key: string,
+  widths: readonly number[],
+  opts: { ar?: string; f?: MediaFormat } = {},
+  menu: ResizeMenu = DEFAULT_MENU,
+): string {
+  const ar = menuAspect(opts.ar, menu);
+  return menuWidths(widths, menu)
+    .map((w) => {
+      const o: { w: number; ar?: string; f?: MediaFormat } = { w };
+      if (ar) o.ar = ar;
+      if (opts.f) o.f = opts.f;
+      return `${mediaUrl(origin, key, o)} ${w}w`;
+    })
+    .join(', ');
+}
+
+export interface MarkupOptions {
+  /** The srcset's widths, all on the menu. */
+  widths: readonly number[];
+  /** A menu aspect ratio for a cover crop; omitted, the image scales down with its own shape. */
+  ar?: string;
+  /** The `sizes` attribute; default `100vw`. */
+  sizes?: string;
+  alt: string;
+  /** The stored image's pixel size, for the intrinsic width and height attributes. */
+  width?: number;
+  height?: number;
+  loading?: 'lazy' | 'eager';
+  decoding?: 'async' | 'sync' | 'auto';
+}
+
+/** Attribute-safe text: ampersands, angle brackets and quotes become entities. */
+export function escapeAttr(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+const attrs = (pairs: [string, string | number | undefined][]) =>
+  pairs
+    .filter((p): p is [string, string | number] => p[1] !== undefined)
+    .map(([k, v]) => ` ${k}="${escapeAttr(String(v))}"`)
+    .join('');
+
+/**
+ * The intrinsic size the `<img>` renders at. A cover crop is exactly the
+ * largest width by the ratio, whatever the source. Scale-down never enlarges,
+ * so without the source's size nothing is claimed; with it, the result is the
+ * source scaled to the largest width or, when the source is narrower, as is.
+ */
+function intrinsicSize(
+  largest: number,
+  ar: string | undefined,
+  o: MarkupOptions,
+): { width?: number; height?: number } {
+  if (ar) {
+    const [a, b] = ar.split(':').map(Number) as [number, number];
+    return { width: largest, height: Math.round((largest * b) / a) };
+  }
+  if (!o.width || !o.height) return {};
+  const width = Math.min(largest, o.width);
+  return { width, height: Math.round((o.height * width) / o.width) };
+}
+
+/** The `<img>` the two builders share; `f` is the src and srcset format. */
+function imgTag(
+  origin: string,
+  key: string,
+  o: MarkupOptions,
+  menu: ResizeMenu,
+  f: MediaFormat,
+): string {
+  const widths = menuWidths(o.widths, menu);
+  const ar = menuAspect(o.ar, menu);
+  const largest = widths[widths.length - 1] as number;
+  const size = intrinsicSize(largest, ar, o);
+  const srcOpts: { w: number; ar?: string; f: MediaFormat } = { w: largest, f };
+  if (ar) srcOpts.ar = ar;
+  const setOpts: { ar?: string; f: MediaFormat } = { f };
+  if (ar) setOpts.ar = ar;
+  return `<img${attrs([
+    ['src', mediaUrl(origin, key, srcOpts)],
+    ['srcset', srcset(origin, key, widths, setOpts, menu)],
+    ['sizes', o.sizes ?? '100vw'],
+    ['alt', o.alt],
+    ['width', size.width],
+    ['height', size.height],
+    ['loading', o.loading ?? 'lazy'],
+    ['decoding', o.decoding ?? 'async'],
+  ])}>`;
+}
+
+/**
+ * A `<picture>` with avif and webp sources and a jpeg `<img>` fallback. The
+ * browser picks the format from the `<source>` types, so it works where the
+ * resizer's Accept negotiation does not reach: a proxy that strips Accept, a
+ * CDN that caches by URL alone, a page saved for offline. The fallback's src
+ * is the jpeg at the largest width.
+ */
+export function pictureMarkup(
+  origin: string,
+  key: string,
+  o: MarkupOptions,
+  menu: ResizeMenu = DEFAULT_MENU,
+): string {
+  const ar = menuAspect(o.ar, menu);
+  const source = (f: MediaOutputFormat) => {
+    const setOpts: { ar?: string; f: MediaFormat } = { f };
+    if (ar) setOpts.ar = ar;
+    return `  <source${attrs([
+      ['type', MEDIA_MIME[f]],
+      ['srcset', srcset(origin, key, o.widths, setOpts, menu)],
+      ['sizes', o.sizes ?? '100vw'],
+    ])}>`;
+  };
+  return [
+    '<picture>',
+    source('avif'),
+    source('webp'),
+    `  ${imgTag(origin, key, o, menu, 'jpeg')}`,
+    '</picture>',
+  ].join('\n');
+}
+
+/** A plain `<img srcset>` whose format the resizer picks from the Accept header (`f=auto`). */
+export function imgMarkup(
+  origin: string,
+  key: string,
+  o: MarkupOptions,
+  menu: ResizeMenu = DEFAULT_MENU,
+): string {
+  return imgTag(origin, key, o, menu, 'auto');
+}

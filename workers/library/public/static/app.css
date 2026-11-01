@@ -552,3 +552,14 @@ a.facet.active .n { color: var(--pr-accent); }
 .pager [role=button] { width: auto; margin: 0; }
 .expiring-table .thumb { width: 5rem; }
 .expiring-table form { margin: 0; }
+
+/* ---- Markup panel (file page) ---- */
+.markup-panel { margin-top: 1rem; }
+.markup-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: 0.5rem 1.2rem; align-items: start; margin: 0.6rem 0; }
+.markup-grid fieldset, .markup-grid > label { margin: 0; font-size: 0.8rem; }
+.markup-grid legend { padding: 0; margin-bottom: 0.2rem; font: 500 0.8rem var(--pr-font-display); }
+.markup-grid fieldset label { display: inline-flex; align-items: center; gap: 0.3rem; margin: 0 0.8rem 0.2rem 0; font-size: 0.8rem; }
+.markup-grid fieldset input { margin: 0; }
+.markup-grid fieldset .n { font-family: var(--pr-font-mono); }
+.markup-grid input[type=text], .markup-grid select { margin: 0; padding: 0.25rem 0.5rem; }
+.markup-panel textarea { margin: 0; font-size: 0.72rem; line-height: 1.45; white-space: pre; overflow-x: auto; resize: vertical; }

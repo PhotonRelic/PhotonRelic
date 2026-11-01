@@ -3,6 +3,7 @@
  * hands every request to the Hono app in app.tsx; the cron trigger runs the
  * expiry rule.
  */
+import { menuFromLists } from '@photonrelic/media-params';
 import { CloudflareAccessVerifier, FixedIdentityVerifier } from './access.js';
 import { type App, createApp } from './app.jsx';
 import type { AppDeps } from './deps.js';
@@ -33,6 +34,7 @@ export function depsFromEnv(env: Env): AppDeps {
     layout: layoutFromVars(env.UPLOAD_PREFIX, env.LIBRARY_PREFIXES),
     mediaOrigin: env.MEDIA_ORIGIN ? env.MEDIA_ORIGIN.replace(/\/$/, '') : null,
     usage: usage ? new AnalyticsEngineUsage(usage) : null,
+    menu: menuFromLists(env.MEDIA_WIDTHS, env.MEDIA_ASPECTS),
     environment: env.ENVIRONMENT,
     now: () => new Date(),
   };

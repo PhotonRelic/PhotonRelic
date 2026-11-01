@@ -12,6 +12,7 @@ import type {
   SearchState,
 } from '../library.js';
 import { altFromPattern, EXPIRING_DAYS, RIGHTS_MAX, SEARCH_STATES } from '../library.js';
+import type { MarkupPanelModel } from '../markup.js';
 import {
   basenameOf,
   type MediaLayout,
@@ -296,6 +297,7 @@ export function searchHref(f: SearchFilters, page = 1): string {
   if (f.q) params.set('q', f.q);
   if (f.subject !== null) params.set('subject', f.subject);
   if (f.tag !== null) params.set('tag', f.tag);
+  if (f.camera !== null) params.set('camera', f.camera);
   if (f.state !== 'all') params.set('state', f.state);
   if (page > 1) params.set('page', String(page));
   const qs = params.toString();
@@ -355,7 +357,11 @@ export function SearchPage({
 }) {
   const self = searchHref(filters, page);
   const narrowed =
-    filters.q !== '' || filters.subject !== null || filters.tag !== null || filters.state !== 'all';
+    filters.q !== '' ||
+    filters.subject !== null ||
+    filters.tag !== null ||
+    filters.camera !== null ||
+    filters.state !== 'all';
   const pages = Math.max(1, Math.ceil(total / pageSize));
   const first = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const last = Math.min(total, page * pageSize);
@@ -368,10 +374,10 @@ export function SearchPage({
       </PageHead>
       <p>
         <small class="muted">
-          Searches what the library knows about each file: its path, subject, tags, default alt text
-          and credit. Only files the library has seen are found, so a file put in the bucket some
-          other way appears here after a Rescan has noted it. Select tiles to file the results in
-          bulk, as in the Library.
+          Searches what the library knows about each file: its path, subject, tags, default alt
+          text, credit, and the camera and lens an upload recorded. Only files the library has seen
+          are found, so a file put in the bucket some other way appears here after a Rescan has
+          noted it. Select tiles to file the results in bulk, as in the Library.
         </small>
       </p>
       <form method="get" action="/library/search" class="filter-bar search-bar">
@@ -379,7 +385,7 @@ export function SearchPage({
           type="search"
           name="q"
           value={filters.q}
-          placeholder="Words from the path, tags, alt text or credit…"
+          placeholder="Words from the path, tags, alt text, credit or camera…"
           aria-label="Search the library"
           autofocus
         />
@@ -387,6 +393,9 @@ export function SearchPage({
           <input type="hidden" name="subject" value={filters.subject} />
         ) : null}
         {filters.tag !== null ? <input type="hidden" name="tag" value={filters.tag} /> : null}
+        {filters.camera !== null ? (
+          <input type="hidden" name="camera" value={filters.camera} />
+        ) : null}
         {filters.state !== 'all' ? (
           <input type="hidden" name="state" value={filters.state} />
         ) : null}
@@ -416,6 +425,12 @@ export function SearchPage({
         items={facets.tags}
         current={filters.tag}
         hrefFor={(v) => searchHref({ ...filters, tag: v })}
+      />
+      <FacetRow
+        label="Camera"
+        items={facets.cameras}
+        current={filters.camera}
+        hrefFor={(v) => searchHref({ ...filters, camera: v })}
       />
       <p class="search-count">
         <span class="n">{total}</span> {total === 1 ? 'file' : 'files'}{' '}
@@ -639,6 +654,51 @@ export function UnusedPage({
   );
 }
 
+/**
+ * What the upload knew about the original: the prep tool strips EXIF on the
+ * user's machine, so this is the only place the capture date and camera
+ * survive. Shown only when something was recorded; a Rescan never fills it,
+ * since the Worker does not read image bytes.
+ */
+export function CaptureBlock({ asset }: { asset: Asset | null }) {
+  if (!asset) return null;
+  const { captured_at, camera, lens, original_width, original_height } = asset;
+  if (!captured_at && !camera && !lens && !original_width) return null;
+  const original =
+    original_width && original_height
+      ? asset.width &&
+        asset.height &&
+        (asset.width !== original_width || asset.height !== original_height)
+        ? `${original_width} × ${original_height} · stored at ${asset.width} × ${asset.height}`
+        : `${original_width} × ${original_height}`
+      : null;
+  return (
+    <>
+      <h4>Capture</h4>
+      <table class="capture">
+        <tbody>
+          <tr>
+            <td>Taken</td>
+            <td>{captured_at ? when(captured_at) : '—'}</td>
+          </tr>
+          <tr>
+            <td>Camera</td>
+            <td>{camera ?? '—'}</td>
+          </tr>
+          <tr>
+            <td>Lens</td>
+            <td>{lens ?? '—'}</td>
+          </tr>
+          <tr>
+            <td>Original size</td>
+            <td class="num">{original ?? '—'}</td>
+          </tr>
+        </tbody>
+      </table>
+    </>
+  );
+}
+
 /** What the file page knows about a key's hits: nothing configured, the counts, or why not. */
 export type UsageStatus =
   | { state: 'off' }
@@ -699,6 +759,94 @@ function InUseWarning({ usage, verb }: { usage: UsageStatus; verb: 'Retiring' | 
   );
 }
 
+/**
+ * Copy-ready embed markup for the file. The first rendering is built on the
+ * server; pr-markup.js rebuilds it as the choices change, reading the key,
+ * origin, alt text and size from the data attributes. Alpine only does the copy.
+ */
+export function MarkupPanel({ model }: { model: MarkupPanelModel }) {
+  return (
+    <article
+      class="markup-panel"
+      id="pr-markup"
+      data-origin={model.origin}
+      data-key={model.key}
+      data-alt={model.alt}
+      data-width={model.width === null ? '' : String(model.width)}
+      data-height={model.height === null ? '' : String(model.height)}
+      x-data=""
+    >
+      <h4>Markup</h4>
+      <p>
+        <small class="muted">
+          Paste this into a page. The browser picks a width from <code>sizes</code>, the share of
+          the viewport the image takes; <code>&lt;picture&gt;</code> lets it pick the format too,
+          while a plain <code>&lt;img&gt;</code> leaves that to the resizer. Every width and aspect
+          here is on the resizer's menu, so nothing in it gets a 400.
+        </small>
+      </p>
+      <div class="markup-grid">
+        <fieldset>
+          <legend>Widths</legend>
+          {model.menu.widths.map((w) => (
+            <label>
+              <input
+                type="checkbox"
+                name="w"
+                value={String(w)}
+                checked={model.ticked.includes(w)}
+              />
+              <span class="n">{w}</span>
+            </label>
+          ))}
+        </fieldset>
+        <label>
+          Aspect
+          <select name="ar">
+            <option value="">none: scale down, own shape</option>
+            {model.menu.aspects.map((a) => (
+              <option value={a}>{a} cover crop</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          sizes
+          <input type="text" name="sizes" value="100vw" placeholder="100vw" />
+        </label>
+        <fieldset>
+          <legend>Element</legend>
+          <label>
+            <input type="radio" name="kind" value="picture" checked /> picture
+          </label>
+          <label>
+            <input type="radio" name="kind" value="img" /> img
+          </label>
+        </fieldset>
+      </div>
+      {model.alt === '' ? (
+        <p>
+          <small class="muted">
+            No default alt text yet: the markup has <code>alt=""</code>. Fill it in under Metadata
+            and save, or write it on the page.
+          </small>
+        </p>
+      ) : null}
+      <textarea name="markup" readonly rows={6} spellcheck={false} x-ref="markup">
+        {model.initial}
+      </textarea>
+      <p class="bulk-actions">
+        <button
+          type="button"
+          class="outline slim"
+          x-on:click="navigator.clipboard.writeText($refs.markup.value); $el.textContent = 'Copied'"
+        >
+          Copy markup
+        </button>
+      </p>
+    </article>
+  );
+}
+
 export function FilePage({
   objectKey: key,
   head,
@@ -708,6 +856,7 @@ export function FilePage({
   hasStore,
   today,
   usage,
+  markup,
 }: {
   objectKey: string;
   head: { size: number; contentType: string; etag: string | null } | null;
@@ -717,6 +866,8 @@ export function FilePage({
   hasStore: boolean;
   today: string;
   usage: UsageStatus;
+  /** The Markup panel's model; null when no resizer is configured. */
+  markup: MarkupPanelModel | null;
 }) {
   const filing = filingLabel(asset ?? undefined);
   return (
@@ -808,6 +959,7 @@ export function FilePage({
               ) : null}
             </tbody>
           </table>
+          <CaptureBlock asset={asset} />
           <UsageBlock usage={usage} />
         </article>
         <article>
@@ -928,6 +1080,16 @@ export function FilePage({
           )}
         </article>
       </div>
+      {!head ? null : markup ? (
+        <MarkupPanel model={markup} />
+      ) : (
+        <p>
+          <small class="muted">
+            Embed markup needs the resizer: set <code>MEDIA_ORIGIN</code> to its origin and the file
+            page offers a copy-ready <code>&lt;picture&gt;</code>.
+          </small>
+        </p>
+      )}
     </>
   );
 }
@@ -962,8 +1124,11 @@ export function UploadPage({
           nothing already stored: drop the same folder again and only what is missing goes up. Up to{' '}
           {UPLOAD_MAX_LABEL} a file, the resizer's input cap: a larger file is refused, so run the
           shoot through <code>tools/prep-images.py</code> first (it resizes to a chosen size or the
-          largest that fits, strips metadata and fixes the names). The bucket holds web copies; keep
-          your originals elsewhere.
+          largest that fits, strips metadata and fixes the names). Drop its output folder whole: the
+          capture date, camera and lens it noted in <code>photonrelic-manifest.json</code> go up
+          with each file, and the manifest stays behind. A file that was not prepped has those read
+          from its own EXIF here, and nothing else. The bucket holds web copies; keep your originals
+          elsewhere.
         </small>
       </p>
       <div

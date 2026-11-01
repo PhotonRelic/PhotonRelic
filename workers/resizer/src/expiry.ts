@@ -4,10 +4,7 @@
  * transform. Without the binding nothing here runs and every key serves.
  */
 
-/** The sliver of D1 this needs; D1Database satisfies it, as does a fake in tests. */
-export interface ExpiryDb {
-  prepare(sql: string): { bind(...values: unknown[]): { first<T>(): Promise<T | null> } };
-}
+import type { Db } from './db.js';
 
 /** The UTC calendar date `expires_at` is compared against. */
 export const todayIso = (): string => new Date().toISOString().slice(0, 10);
@@ -17,7 +14,7 @@ export const todayIso = (): string => new Date().toISOString().slice(0, 10);
  * A database error is logged and treated as not expired: a public image host
  * must not go dark because its metadata store hiccupped.
  */
-export async function isExpired(db: ExpiryDb, key: string, today = todayIso()): Promise<boolean> {
+export async function isExpired(db: Db, key: string, today = todayIso()): Promise<boolean> {
   try {
     const row = await db
       .prepare('SELECT 1 AS gone FROM assets WHERE key = ?1 AND expires_at < ?2')

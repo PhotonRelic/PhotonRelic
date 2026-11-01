@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  assetListUrl,
+  assetUrl,
   DEFAULT_MENU,
+  imgMarkup,
   mediaUrl,
   menuFromLists,
   negotiateFormat,
   parseMediaParams,
+  pictureMarkup,
+  srcset,
   USAGE_INDEX_MAX_BYTES,
   usageIndex,
 } from '../src/index.js';
@@ -96,5 +101,105 @@ describe('usageIndex', () => {
     expect(usageIndex(long)).not.toBe(usageIndex(`${long.slice(0, -4)}-2.jpg`));
     // Bytes, not characters: a multi-byte name over the cap is hashed too.
     expect(usageIndex(`media/${'é'.repeat(60)}.jpg`)).toMatch(/^#/);
+  });
+});
+
+describe('assetUrl and assetListUrl', () => {
+  it('builds the metadata URL for a key, encoded per segment like mediaUrl', () => {
+    expect(assetUrl('https://img.example.com/', 'media/a b/c.jpg')).toBe(
+      'https://img.example.com/api/v1/assets/media/a%20b/c.jpg',
+    );
+    expect(assetUrl('https://img.example.com', 'media/café.jpg')).toBe(
+      'https://img.example.com/api/v1/assets/media/caf%C3%A9.jpg',
+    );
+  });
+
+  it('builds the listing URL with only the filters given', () => {
+    expect(assetListUrl('https://img.example.com/')).toBe('https://img.example.com/api/v1/assets');
+    expect(
+      assetListUrl('https://img.example.com', {
+        prefix: 'media/products/',
+        subject: 'products',
+        tag: 'hero shot',
+        limit: 50,
+        cursor: 'bWVkaWEvYS5qcGc',
+      }),
+    ).toBe(
+      'https://img.example.com/api/v1/assets?prefix=media%2Fproducts%2F&subject=products&tag=hero+shot&limit=50&cursor=bWVkaWEvYS5qcGc',
+    );
+  });
+});
+
+describe('embed markup', () => {
+  const O = 'https://img.example.com';
+  const K = 'media/products/chair.jpg';
+
+  it('builds a srcset from menu widths, ascending and deduplicated', () => {
+    expect(srcset(O, K, [768, 320, 320])).toBe(
+      `${O}/${K}?w=320&f=auto 320w, ${O}/${K}?w=768&f=auto 768w`,
+    );
+    expect(srcset(O, K, [320], { ar: '1:1', f: 'webp' })).toBe(
+      `${O}/${K}?w=320&ar=1%3A1&f=webp 320w`,
+    );
+  });
+
+  it('refuses an off-menu width or aspect, and no widths at all', () => {
+    expect(() => srcset(O, K, [777])).toThrow(/w must be one of/);
+    expect(() => srcset(O, K, [320], { ar: '7:3' })).toThrow(/ar must be one of/);
+    expect(() => srcset(O, K, [])).toThrow(/at least one/);
+    expect(() => pictureMarkup(O, K, { widths: [320], alt: '' }, menuFromLists('100'))).toThrow(
+      /w must be one of 100/,
+    );
+    expect(() =>
+      imgMarkup(O, K, { widths: [320], ar: '1:1', alt: '' }, menuFromLists('320', '2:1')),
+    ).toThrow(/ar must be one of 2:1/);
+  });
+
+  it('writes a picture with avif and webp sources and a jpeg fallback at the largest width', () => {
+    const html = pictureMarkup(O, K, {
+      widths: [1024, 480],
+      sizes: '(min-width: 60em) 50vw, 100vw',
+      alt: 'A chair',
+      width: 2000,
+      height: 1500,
+    });
+    const sizes = 'sizes="(min-width: 60em) 50vw, 100vw"';
+    expect(html).toBe(
+      [
+        '<picture>',
+        `  <source type="image/avif" srcset="${O}/${K}?w=480&amp;f=avif 480w, ${O}/${K}?w=1024&amp;f=avif 1024w" ${sizes}>`,
+        `  <source type="image/webp" srcset="${O}/${K}?w=480&amp;f=webp 480w, ${O}/${K}?w=1024&amp;f=webp 1024w" ${sizes}>`,
+        `  <img src="${O}/${K}?w=1024&amp;f=jpeg" srcset="${O}/${K}?w=480&amp;f=jpeg 480w, ${O}/${K}?w=1024&amp;f=jpeg 1024w" ${sizes} alt="A chair" width="1024" height="768" loading="lazy" decoding="async">`,
+        '</picture>',
+      ].join('\n'),
+    );
+  });
+
+  it('writes a plain img with f=auto, 100vw by default, and no size without the source size', () => {
+    expect(
+      imgMarkup(O, K, { widths: [320], alt: 'A chair', loading: 'eager', decoding: 'sync' }),
+    ).toBe(
+      `<img src="${O}/${K}?w=320&amp;f=auto" srcset="${O}/${K}?w=320&amp;f=auto 320w" sizes="100vw" alt="A chair" loading="eager" decoding="sync">`,
+    );
+  });
+
+  it('sizes a cover crop from the ratio and a scale-down from the source, never enlarging', () => {
+    const crop = imgMarkup(O, K, { widths: [320, 768], ar: '16:9', alt: '' });
+    expect(crop).toContain(`src="${O}/${K}?w=768&amp;ar=16%3A9&amp;f=auto"`);
+    expect(crop).toContain(' width="768" height="432" ');
+    const small = imgMarkup(O, K, { widths: [1440], alt: '', width: 800, height: 600 });
+    expect(small).toContain(' width="800" height="600" ');
+    const large = imgMarkup(O, K, { widths: [480], alt: '', width: 2000, height: 1500 });
+    expect(large).toContain(' width="480" height="360" ');
+  });
+
+  it('escapes quotes, angle brackets and ampersands in attributes', () => {
+    const html = imgMarkup(O, 'media/a&b/c.jpg', {
+      widths: [320],
+      alt: 'Say "hi" <b>& go</b>',
+    });
+    expect(html).toContain('alt="Say &quot;hi&quot; &lt;b&gt;&amp; go&lt;/b&gt;"');
+    expect(html).toContain('/media/a%26b/c.jpg?w=320&amp;f=auto');
+    expect(html).not.toContain('<b>');
   });
 });
