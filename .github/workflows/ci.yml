@@ -1,0 +1,79 @@
+# Lint, typecheck and test every pull request and every push to master, and
+# check that no private name slipped into the tree or the commit messages.
+# Nothing here deploys: deployment needs account secrets and prints account
+# details in its logs, which are public on this repo, so it lives elsewhere.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Lint, typecheck, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 12
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+
+  names:
+    name: Private names
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+      # The patterns are a repository secret, so they never appear in this
+      # public file or in the logs; only the names of offending files are
+      # printed. Pull requests from forks have no secrets and skip the scan.
+      - name: Scan the tree and the commit messages
+        env:
+          FORBIDDEN_PATTERNS: ${{ secrets.FORBIDDEN_PATTERNS }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$FORBIDDEN_PATTERNS" ]; then
+            echo "No pattern secret available (fork pull request); scan skipped."
+            exit 0
+          fi
+          status=0
+          files=$(git ls-files -z \
+            | grep -zvE '^pnpm-lock\.yaml$|\.woff2$' \
+            | xargs -0 grep -IilE -e "$FORBIDDEN_PATTERNS" -- || true)
+          if [ -n "$files" ]; then
+            echo "::error::Private names found in:"
+            printf '%s\n' "$files"
+            status=1
+          fi
+          if [ -n "$BASE" ] && ! printf '%s' "$BASE" | grep -q '^0*$' && git cat-file -e "$BASE" 2>/dev/null; then
+            range="$BASE..HEAD"
+          else
+            range="HEAD"
+          fi
+          bad=$(git log --format='%H %B' "$range" | grep -iE -e "$FORBIDDEN_PATTERNS" | cut -c1-40 || true)
+          if [ -n "$bad" ]; then
+            echo "::error::Private names in the messages of these commits:"
+            printf '%s\n' "$bad"
+            status=1
+          fi
+          [ "$status" -eq 0 ] && echo "Clean."
+          exit $status
