@@ -18,6 +18,8 @@ SERVED_PREFIXES = "media/"
 # Optional: only pages on these hosts may embed images; include the library's
 # hostname. Unset, any page may embed. See workers/resizer/wrangler.toml.
 # ALLOWED_ORIGINS = "www.example.com, example.com, *.example.com, media-admin.example.com"
+# The library's host, whose pages may still see a file whose rights have expired (README).
+# LIBRARY_HOST = "media-admin.example.com"
 
 [[r2_buckets]]
 binding = "MEDIA"

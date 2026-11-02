@@ -58,7 +58,7 @@ export function hostMatches(url: URL, pattern: string): boolean {
 }
 
 /** The page making the request: `absent` with neither header, `invalid` when a header is present but not a URL. */
-function pageUrl(request: Request): URL | 'absent' | 'invalid' {
+export function pageUrl(request: Request): URL | 'absent' | 'invalid' {
   const origin = request.headers.get('origin');
   const header = origin && origin !== 'null' ? origin : request.headers.get('referer');
   if (!header) return 'absent';
@@ -82,4 +82,21 @@ export function decideEmbed(request: Request, policy: EmbedPolicy): EmbedDecisio
     return { allowed: true, origin: page.origin };
   }
   return { allowed: false, reason: 'not-allowed' };
+}
+
+/** Whether the page making the request is on the given host pattern. */
+export function pageIsOn(request: Request, pattern: string): boolean {
+  const page = pageUrl(request);
+  return page !== 'absent' && page !== 'invalid' && hostMatches(page, pattern);
+}
+
+/**
+ * LIBRARY_HOST: the library's own host, whose pages may still see a file
+ * whose rights have expired. One host pattern; unset or blank means none.
+ */
+export function libraryHostFromVar(raw: string | undefined): string | null {
+  const host = (raw ?? '').trim().toLowerCase();
+  if (!host) return null;
+  if (!PATTERN.test(host)) throw new Error(`Not a host: ${host}`);
+  return host;
 }

@@ -35,6 +35,10 @@ SERVED_PREFIXES = "media/"
 # With ALLOWED_ORIGINS, requests that carry no Origin or Referer (a direct link,
 # an email client, a privacy browser) are let through unless this is "false".
 # ALLOW_EMPTY_REFERER = "true"
+# The library's own host: its pages may still see a file whose rights have
+# expired, so the person renewing or retiring it knows what it is. Those
+# responses never enter the shared cache. Unset, an expired file is 410 to all.
+# LIBRARY_HOST = "media-admin.example.com"
 
 [[r2_buckets]]
 binding = "MEDIA"

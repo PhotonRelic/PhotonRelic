@@ -4,7 +4,7 @@
  */
 import { menuFromLists } from '@photonrelic/media-params';
 import { createApp } from './app.js';
-import { embedPolicyFromVars } from './embed.js';
+import { embedPolicyFromVars, libraryHostFromVar } from './embed.js';
 import { CloudflareImageTransformer } from './images.js';
 import { parsePrefixes, R2MediaSource } from './source.js';
 import { AnalyticsEngineUsageSink } from './usage.js';
@@ -28,6 +28,8 @@ export interface Env {
   ALLOWED_ORIGINS?: string;
   /** With ALLOWED_ORIGINS: "false" also refuses requests with no Origin or Referer. Default true. */
   ALLOW_EMPTY_REFERER?: string;
+  /** The library's host: its pages may still see a file whose rights have expired. Unset: nobody may. */
+  LIBRARY_HOST?: string;
 }
 
 const apps = new WeakMap<Env, ReturnType<typeof createApp>>();
@@ -44,6 +46,7 @@ export default {
         embed: embedPolicyFromVars(env.ALLOWED_ORIGINS, env.ALLOW_EMPTY_REFERER),
         db: env.DB ?? null,
         usage: env.USAGE ? new AnalyticsEngineUsageSink(env.USAGE) : null,
+        library: libraryHostFromVar(env.LIBRARY_HOST),
       });
       apps.set(env, app);
     }
