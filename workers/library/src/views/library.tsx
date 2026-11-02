@@ -185,7 +185,13 @@ export function TileGrid({ tiles, preview }: { tiles: Tile[]; preview: Preview }
               <span class="muted">select</span>
             </label>
             <a href={fileHref(o.key)}>
-              <img class="thumb" src={preview(o.key, 320)} alt="" loading="lazy" />
+              <img
+                class="thumb"
+                src={preview(o.key, 320)}
+                alt=""
+                loading="lazy"
+                referrerpolicy="strict-origin"
+              />
             </a>
             <p>
               <a href={fileHref(o.key)}>
@@ -901,7 +907,12 @@ export function FilePage({
       <div class="detail-grid">
         <article>
           {head ? (
-            <img class="thumb" src={preview(key, 1024)} alt={asset?.alt_default ?? ''} />
+            <img
+              class="thumb"
+              src={preview(key, 1024)}
+              alt={asset?.alt_default ?? ''}
+              referrerpolicy="strict-origin"
+            />
           ) : (
             <p class="muted">No preview.</p>
           )}
@@ -1198,7 +1209,7 @@ function FocalBlock({
           x-bind:value="set ? y.toFixed(4) : ''"
         />
         <div class="focal-pick" x-on:click={pick} title="Click to set the focal point">
-          <img src={src} alt="" draggable={false} />
+          <img src={src} alt="" draggable={false} referrerpolicy="strict-origin" />
           <span
             class="focal-mark"
             aria-hidden="true"
@@ -1552,7 +1563,13 @@ export function DuplicatesPage({
             <div class="tile-grid">
               {g.assets.map((a, i) => (
                 <article>
-                  <img class="thumb" src={preview(a.key, 320)} alt="" loading="lazy" />
+                  <img
+                    class="thumb"
+                    src={preview(a.key, 320)}
+                    alt=""
+                    loading="lazy"
+                    referrerpolicy="strict-origin"
+                  />
                   <p>
                     <a href={fileHref(a.key)}>
                       <code class="path">{a.key}</code>
@@ -1630,7 +1647,13 @@ export function ExpiringPage({
               <tr>
                 <td>
                   <a href={fileHref(a.key)}>
-                    <img class="thumb" src={preview(a.key, 160)} alt="" loading="lazy" />
+                    <img
+                      class="thumb"
+                      src={preview(a.key, 160)}
+                      alt=""
+                      loading="lazy"
+                      referrerpolicy="strict-origin"
+                    />
                   </a>
                 </td>
                 <td>

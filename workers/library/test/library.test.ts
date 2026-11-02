@@ -1115,7 +1115,7 @@ describe('focal point', () => {
     expect(html).toContain('class="focal-pick"');
     expect(html).toContain('action="/library/file/focal"');
     expect(html).toContain(
-      `<img src="https://img.example.com/${KEY}?w=1024&amp;f=auto" alt="" draggable="false"/>`,
+      `<img src="https://img.example.com/${KEY}?w=1024&amp;f=auto" alt="" draggable="false" referrerpolicy="strict-origin"/>`,
     );
     expect(html).toContain('name="x" value=""');
     expect(html).toContain('>automatic</td>');
@@ -1151,5 +1151,20 @@ describe('audit', () => {
     await h.form('/library/rescan', []);
     const html = await (await h.req('/audit')).text();
     expect(html.indexOf('library.rescan')).toBeLessThan(html.indexOf('library.uploaded'));
+  });
+});
+
+describe('previews', () => {
+  it('name the library to the resizer, so an expired file still shows to staff', async () => {
+    const h = harness();
+    await h.put('media/x/a.jpg', bytes('a'));
+    for (const path of [
+      '/library?prefix=media/x/',
+      `/library/file?key=${encodeURIComponent('media/x/a.jpg')}`,
+    ]) {
+      const html = await (await h.req(path)).text();
+      expect(html, path).toContain('referrerpolicy="strict-origin"');
+      expect(html, path).not.toMatch(/<img class="thumb"(?![^>]*referrerpolicy)/);
+    }
   });
 });

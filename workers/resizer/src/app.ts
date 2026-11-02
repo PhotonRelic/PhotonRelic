@@ -26,7 +26,7 @@ import { type Context, Hono } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getAsset, getFocal, isUnderPrefix, listAssets, parseListQuery } from './api.js';
 import type { Db } from './db.js';
-import { decideEmbed, type EmbedPolicy } from './embed.js';
+import { decideEmbed, type EmbedPolicy, pageIsOn } from './embed.js';
 import { isExpired } from './expiry.js';
 import { type ImageTransformer, TransformFailed } from './images.js';
 import { isServableKey, type MediaSource } from './source.js';
@@ -47,9 +47,17 @@ export interface ResizerDeps {
   db: Db | null;
   /** Where each image served is counted; null counts nothing. */
   usage: UsageSink | null;
+  /**
+   * The library's own host. Its pages may still see a file whose rights have
+   * expired, so the person renewing or retiring it knows what it is; null
+   * means no such exception.
+   */
+  library: string | null;
 }
 
 export const CACHE_STORED = 'public, max-age=86400';
+/** An expired file shown to the library: the browser may keep it, no shared cache may. */
+export const CACHE_STAFF_ONLY = 'private, max-age=3600';
 /** Paths are not content-hashed, so transformed output is fresh for a day at the edge. */
 export const CACHE_TRANSFORMED =
   'public, s-maxage=86400, max-age=3600, stale-while-revalidate=604800';
@@ -150,14 +158,20 @@ export function createApp(deps: ResizerDeps) {
   };
 
   /**
-   * The 410 for a key whose rights have run out, or null. Asked on a cache
-   * miss only, so a copy already at the edge serves out its day; the 410
-   * itself is not cached, so un-retiring (a new date) takes effect at once.
+   * Whether a key's rights have run out, and what that means for this
+   * request: `live` serves and caches as usual; `staff` serves because the
+   * page is the library's own, but never through the shared cache, so a
+   * staff view can never become a public hit; a Response is the 410.
+   * Asked on a cache miss only, so a copy already at the edge serves out its
+   * day; the 410 itself is not cached, so a new date takes effect at once.
+   * The library's identity is its Referer, which is a publishing control,
+   * not a security boundary: the file was public until the date passed.
    */
-  const gone = async (c: Context, key: string) =>
-    deps.db && (await isExpired(deps.db, key))
-      ? apiError(c, 410, 'EXPIRED', 'The rights to this image have expired')
-      : null;
+  const expiry = async (c: Context, key: string): Promise<'live' | 'staff' | Response> => {
+    if (!deps.db || !(await isExpired(deps.db, key))) return 'live';
+    if (deps.library && pageIsOn(c.req.raw, deps.library)) return 'staff';
+    return apiError(c, 410, 'EXPIRED', 'The rights to this image have expired');
+  };
   /** Count one image served, after the response; only 200s reach here. */
   const note = (c: Context, point: UsagePoint) => {
     if (deps.usage) void background(c, deps.usage.record(point));
@@ -182,8 +196,8 @@ export function createApp(deps: ResizerDeps) {
     const { cache, cacheKey } = cacheFor(new URL(c.req.url).toString());
     const hit = await cache?.match(cacheKey);
     if (hit) return notedHit(c, key, hit, null);
-    const expired = await gone(c, key);
-    if (expired) return expired;
+    const state = await expiry(c, key);
+    if (state instanceof Response) return state;
     const object = await deps.source.get(key);
     if (!object) return apiError(c, 404, 'NOT_FOUND', 'No such media');
     const res = new Response(object.body, {
@@ -192,10 +206,10 @@ export function createApp(deps: ResizerDeps) {
         ...HEADERS,
         'content-type': object.contentType,
         'content-length': String(object.size),
-        'cache-control': CACHE_STORED,
+        'cache-control': state === 'live' ? CACHE_STORED : CACHE_STAFF_ONLY,
       },
     });
-    if (cache) void background(c, cache.put(cacheKey, res.clone()));
+    if (cache && state === 'live') void background(c, cache.put(cacheKey, res.clone()));
     note(c, { key, kind: 'stored', format: object.contentType, cache: 'miss', bytes: object.size });
     return res;
   };
@@ -205,15 +219,15 @@ export function createApp(deps: ResizerDeps) {
     const { cache, cacheKey } = cacheFor(transformCacheKey(c.req.url, params.resolved));
     const hit = await cache?.match(cacheKey);
     if (hit) return notedHit(c, key, hit, params.resolved);
-    const expired = await gone(c, key);
-    if (expired) return expired;
+    const state = await expiry(c, key);
+    if (state instanceof Response) return state;
 
     const object = await deps.source.get(key);
     if (!object) return apiError(c, 404, 'NOT_FOUND', 'No such media');
 
     const headers: Record<string, string> = {
       ...HEADERS,
-      'cache-control': CACHE_TRANSFORMED,
+      'cache-control': state === 'live' ? CACHE_TRANSFORMED : CACHE_STAFF_ONLY,
       vary: 'Accept',
     };
     let res: Response;
@@ -297,7 +311,7 @@ export function createApp(deps: ResizerDeps) {
         bytes: out.body.byteLength,
       };
     }
-    if (cache) void background(c, cache.put(cacheKey, res.clone()));
+    if (cache && state === 'live') void background(c, cache.put(cacheKey, res.clone()));
     note(c, point);
     return res;
   };

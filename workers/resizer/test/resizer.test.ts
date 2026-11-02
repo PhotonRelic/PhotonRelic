@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeCursor, encodeCursor } from '../src/api.js';
 import {
   CACHE_API,
+  CACHE_STAFF_ONLY,
   CACHE_STORED,
   CACHE_TRANSFORMED,
   createApp,
@@ -22,6 +23,7 @@ import {
   type EmbedPolicy,
   embedPolicyFromVars,
   hostMatches,
+  libraryHostFromVar,
   parseAllowedOrigins,
 } from '../src/embed.js';
 import { isExpired } from '../src/expiry.js';
@@ -91,6 +93,7 @@ function harness(
     embed?: EmbedPolicy | null;
     db?: Db | null;
     usage?: boolean;
+    library?: string;
   } = {},
 ) {
   const source = new MemoryMediaSource();
@@ -108,6 +111,7 @@ function harness(
     embed: opts.embed ?? null,
     db: opts.db ?? null,
     usage: opts.usage === false ? null : usage,
+    library: opts.library ?? null,
   });
   const get = (path: string, headers: Record<string, string> = {}) =>
     app.request(`https://img.example.com${path}`, { headers });
@@ -489,6 +493,67 @@ describe('rights expiry', () => {
     const resized = await h.get('/media/workshop/bench.jpg?w=320&f=webp');
     expect(resized.status).toBe(410);
     expect(h.images.calls).toHaveLength(0);
+  });
+
+  it('still shows an expired file to the library, uncached, and to nobody else', async () => {
+    const db = new FakeDb();
+    db.expiries.set('media/workshop/bench.jpg', yesterday);
+    const h = harness({ db, library: 'library.example.com' });
+    const cached = new Map<string, Response>();
+    const g = globalThis as { caches?: unknown };
+    g.caches = {
+      default: {
+        match: async (req: Request) => cached.get(req.url)?.clone(),
+        put: async (req: Request, res: Response) => {
+          cached.set(req.url, res);
+        },
+      },
+    };
+    try {
+      const page = { referer: 'https://library.example.com/library/file?key=x' };
+      const stored = await h.get('/media/workshop/bench.jpg', page);
+      expect(stored.status).toBe(200);
+      expect(stored.headers.get('cache-control')).toBe(CACHE_STAFF_ONLY);
+      const resized = await h.get('/media/workshop/bench.jpg?w=320&f=webp', page);
+      expect(resized.status).toBe(200);
+      expect(resized.headers.get('cache-control')).toBe(CACHE_STAFF_ONLY);
+      // The Origin header names the page too, as a fetch from the library would.
+      const fetched = await h.get('/media/workshop/bench.jpg?w=320&f=webp', {
+        origin: 'https://library.example.com',
+      });
+      expect(fetched.status).toBe(200);
+      // Nothing the library saw reached the shared cache, so the public still gets the 410.
+      expect(cached.size).toBe(0);
+      expect((await h.get('/media/workshop/bench.jpg')).status).toBe(410);
+      expect((await h.get('/media/workshop/bench.jpg?w=320&f=webp')).status).toBe(410);
+      const elsewhere = await h.get('/media/workshop/bench.jpg', {
+        referer: 'https://www.example.com/page',
+      });
+      expect(elsewhere.status).toBe(410);
+      expect((await h.get('/media/workshop/bench.jpg', { referer: 'not a url' })).status).toBe(410);
+      // A live file from the library is cached as ever.
+      db.expiries.set('media/products/Chair-01ABC.PNG', tomorrow);
+      const live = await h.get('/media/products/Chair-01ABC.PNG?w=320&f=webp', page);
+      expect(live.status).toBe(200);
+      expect(live.headers.get('cache-control')).toBe(CACHE_TRANSFORMED);
+      expect(cached.size).toBe(1);
+    } finally {
+      g.caches = undefined;
+    }
+    // Without the setting the library is nobody special.
+    const plain = harness({ db });
+    const refused = await plain.get('/media/workshop/bench.jpg', {
+      referer: 'https://library.example.com/',
+    });
+    expect(refused.status).toBe(410);
+  });
+
+  it('reads the library host from its var and refuses a malformed one', () => {
+    expect(libraryHostFromVar(undefined)).toBeNull();
+    expect(libraryHostFromVar('  ')).toBeNull();
+    expect(libraryHostFromVar('Library.Example.com')).toBe('library.example.com');
+    expect(libraryHostFromVar('localhost:8787')).toBe('localhost:8787');
+    expect(() => libraryHostFromVar('https://library.example.com')).toThrow(/Not a host/);
   });
 
   it('serves a key that expires today or later, or has no row', async () => {
