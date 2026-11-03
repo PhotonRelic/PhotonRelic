@@ -702,9 +702,9 @@ export function UnusedPage({
  * since the Worker does not read image bytes.
  */
 /**
- * Where the master is: a link with a provider glyph (letters, never a
- * vendor's mark) and label when there is a URL, the recorded name beside or
- * instead of it.
+ * Where the master is: a link with the provider's own icon (vendored under
+ * its brand terms; a lettered chip where there is none) and label when there
+ * is a URL, the recorded name beside or instead of it.
  */
 export function MasterLink({ url, name }: { url: string | null; name: string | null }) {
   const provider = url ? masterProvider(url) : null;
@@ -712,7 +712,16 @@ export function MasterLink({ url, name }: { url: string | null; name: string | n
     <span class="master-link">
       {url && provider ? (
         <a href={url} target="_blank" rel="noopener noreferrer" title={url}>
-          <span class={`provider provider-${provider.code.toLowerCase()}`}>{provider.code}</span>{' '}
+          {provider.icon ? (
+            <img
+              class={provider.wide ? 'provider-icon provider-icon-wide' : 'provider-icon'}
+              src={`/static/vendor/brands/${provider.icon}`}
+              alt=""
+              {...(provider.wide ? { width: 50 } : { width: 16, height: 16 })}
+            />
+          ) : (
+            <span class={`provider provider-${provider.code.toLowerCase()}`}>{provider.code}</span>
+          )}{' '}
           {provider.label}
         </a>
       ) : null}

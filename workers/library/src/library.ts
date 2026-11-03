@@ -722,11 +722,19 @@ export function isMasterUrl(s: string): boolean {
   }
 }
 
-/** Where a master link points, judged by its host or scheme, for a glyph and a label. */
+/**
+ * Where a master link points, judged by its host or scheme, for an icon and a
+ * label. The icons are the providers' own, vendored under their brand terms
+ * (THIRD_PARTY_NOTICES.md); a provider without one gets a lettered chip.
+ */
 export interface MasterProvider {
-  /** A short code for the glyph: letters, never a vendor's mark. */
+  /** A short code for the chip shown when there is no icon. */
   code: string;
   label: string;
+  /** The icon's file under /static/vendor/brands/, or null for the lettered chip. */
+  icon: string | null;
+  /** A wordmark with a minimum width in its brand's rules, shown at that width rather than 16 px. */
+  wide?: boolean;
 }
 
 export function masterProvider(url: string): MasterProvider {
@@ -734,25 +742,30 @@ export function masterProvider(url: string): MasterProvider {
   try {
     u = new URL(url);
   } catch {
-    return { code: 'URL', label: 'Link' };
+    return { code: 'URL', label: 'Link', icon: null };
   }
   const host = u.hostname.toLowerCase();
   const scheme = u.protocol.replace(/:$/, '');
   const on = (...hosts: string[]) =>
     hosts.some((h) => (h.startsWith('.') ? host.endsWith(h) : host === h));
-  if (on('drive.google.com', 'docs.google.com')) return { code: 'GD', label: 'Google Drive' };
-  if (on('.sharepoint.com', '.sharepoint.us')) return { code: 'SP', label: 'SharePoint' };
+  if (on('drive.google.com', 'docs.google.com'))
+    return { code: 'GD', label: 'Google Drive', icon: 'google-drive.svg' };
+  if (on('.sharepoint.com', '.sharepoint.us'))
+    return { code: 'SP', label: 'SharePoint', icon: 'sharepoint.svg' };
   if (on('onedrive.live.com', '1drv.ms', '.sharepoint-df.com'))
-    return { code: 'OD', label: 'OneDrive' };
-  if (scheme === 's3' || on('.amazonaws.com')) return { code: 'S3', label: 'Amazon S3' };
+    return { code: 'OD', label: 'OneDrive', icon: 'onedrive.svg' };
+  if (scheme === 's3' || on('.amazonaws.com'))
+    return { code: 'S3', label: 'Amazon S3', icon: 'amazon-s3.svg' };
   if (scheme === 'azure' || scheme === 'wasb' || scheme === 'wasbs' || on('.blob.core.windows.net'))
-    return { code: 'AZ', label: 'Azure Blob' };
+    return { code: 'AZ', label: 'Azure Blob', icon: 'azure-storage.svg' };
   if (on('dropbox.com', '.dropbox.com', 'dropboxusercontent.com'))
-    return { code: 'DB', label: 'Dropbox' };
-  if (on('box.com', '.box.com')) return { code: 'BX', label: 'Box' };
+    return { code: 'DB', label: 'Dropbox', icon: 'dropbox.svg' };
+  // Box's logo is its wordmark, white on dark surfaces and never under 50 px wide (its brand guide).
+  if (on('box.com', '.box.com'))
+    return { code: 'BX', label: 'Box', icon: 'box-white.svg', wide: true };
   if (scheme === 'file' || scheme === 'smb' || scheme === 'afp')
-    return { code: 'NAS', label: 'Network share' };
-  return { code: 'URL', label: host || scheme };
+    return { code: 'NAS', label: 'Network share', icon: null };
+  return { code: 'URL', label: host || scheme, icon: null };
 }
 
 export const parseTags = (text: string): string[] => [

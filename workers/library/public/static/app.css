@@ -502,6 +502,8 @@ nav.tabs a:hover { color: var(--pr-highlight); }
 .provider-sp, .provider-od, .provider-az { border-color: rgba(0, 160, 200, 0.5); }
 .provider-s3 { border-color: rgba(255, 153, 0, 0.5); }
 .provider-db, .provider-bx { border-color: rgba(0, 120, 255, 0.35); }
+.provider-icon { width: 16px; height: 16px; vertical-align: -3px; margin-right: 2px; }
+.provider-icon-wide { width: 50px; height: auto; vertical-align: -6px; margin: 0 6px 0 2px; }
 .master-link a { text-decoration: none; }
 .tile-creator { margin-top: -0.3rem; }
 .tile-unfiled { border-color: rgba(255, 204, 0, 0.35); }
