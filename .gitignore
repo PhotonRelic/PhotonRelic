@@ -14,3 +14,6 @@ __pycache__/
 # or in a private repo; deploy/example/ is the template.
 deploy/*
 !deploy/example/
+
+# Local only.
+dev/
