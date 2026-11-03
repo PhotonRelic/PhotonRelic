@@ -633,6 +633,10 @@ describe('metadata API', () => {
         tags: ['hero', 'wood'],
         alt: 'A workbench under a window',
         credit: 'Studio',
+        title: null,
+        creator: null,
+        copyright: null,
+        origin: null,
         firstSeen: '2026-10-01T00:00:00.000Z',
         capturedAt: null,
         camera: null,
@@ -642,6 +646,35 @@ describe('metadata API', () => {
         focal: null,
       },
     });
+  });
+
+  it('serves the title, creator, copyright and origin, and never where the master is', async () => {
+    const db = filed();
+    db.raw
+      .prepare(
+        `UPDATE assets SET title = ?, creator = ?, copyright = ?, origin = ?, master_url = ?, master_name = ?
+         WHERE key = ?`,
+      )
+      .run(
+        'A workbench',
+        'A. Joiner',
+        '© 2026 A. Joiner',
+        'Commissioned shoot',
+        'https://drive.google.com/file/d/abc/view',
+        'bench.psd',
+        KEY,
+      );
+    const h = harness({ db });
+    const body = await (await h.get(`/api/v1/assets/${KEY}`)).text();
+    expect(JSON.parse(body).asset).toMatchObject({
+      title: 'A workbench',
+      creator: 'A. Joiner',
+      copyright: '© 2026 A. Joiner',
+      origin: 'Commissioned shoot',
+    });
+    expect(body).not.toContain('master');
+    expect(body).not.toContain('drive.google.com');
+    expect(body).not.toContain('bench.psd');
   });
 
   it('includes the capture data an upload recorded', async () => {

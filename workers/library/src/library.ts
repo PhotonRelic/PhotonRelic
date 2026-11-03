@@ -38,11 +38,29 @@ export interface AssetRow {
   tags: string;
   alt_default: string;
   credit: string | null;
+  /**
+   * What the file said about itself (IPTC, XMP, EXIF), seeded by an upload
+   * and editable since: a title, who made it, the copyright notice, and where
+   * it came from ("Adobe Stock 270140535"). `origin`, not `source`: that
+   * column says how the key entered the library.
+   */
+  title: string | null;
+  creator: string | null;
+  copyright: string | null;
+  origin: string | null;
   /** Rights: free text, an http(s) URL, free text, and a date (YYYY-MM-DD); all optional. */
   license: string | null;
   source_url: string | null;
   restrictions: string | null;
   expires_at: string | null;
+  /**
+   * The master this web copy was made from: a link to wherever the team keeps
+   * it (any URL scheme), its file name, and, reserved for a copy held in the
+   * bucket under masters/, its key. Never served by the metadata API.
+   */
+  master_url: string | null;
+  master_name: string | null;
+  master_key: string | null;
   source: AssetSource;
   first_seen: string;
   uploaded_by: string | null;
@@ -194,13 +212,17 @@ export interface UploadRecord {
   uploaded_by: string;
   /** What the browser knew about the original; absent when it sent nothing. */
   capture?: Capture | null | undefined;
+  /** What the file said about itself, from the manifest or its own tags; absent when nothing was sent. */
+  describe?: Describe | null | undefined;
 }
 
 /**
  * An upload made here: filed under its subject at once, hash known, source
  * 'upload'. A retry that sends no capture entry keeps the one already recorded:
  * the browser only reads EXIF once per file, and the record must not lose it
- * to a second attempt.
+ * to a second attempt. The describe entry seeds the editable fields and only
+ * where the row has nothing: a title, tags, alt text or credit staff typed is
+ * never written over by a later upload of the same key.
  */
 export async function recordUpload(
   db: Db,
@@ -210,11 +232,14 @@ export async function recordUpload(
 ): Promise<void> {
   const subject = subjectOf(layout, u.key);
   const cap = u.capture ?? {};
+  const d = u.describe ?? {};
   await db
     .prepare(
       `INSERT INTO assets (key, etag, sha256, bytes, content_type, width, height, subject, source, first_seen, uploaded_by, filed_by, filed_at,
-                           captured_at, camera, lens, original_width, original_height)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'upload', ?9, ?10, ?10, ?9, ?11, ?12, ?13, ?14, ?15)
+                           captured_at, camera, lens, original_width, original_height,
+                           tags, alt_default, credit, title, creator, copyright, origin, source_url, restrictions, master_name, license)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'upload', ?9, ?10, ?10, ?9, ?11, ?12, ?13, ?14, ?15,
+               ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)
        ON CONFLICT(key) DO UPDATE SET etag = excluded.etag, sha256 = excluded.sha256, bytes = excluded.bytes,
          content_type = excluded.content_type, width = excluded.width, height = excluded.height,
          subject = COALESCE(assets.subject, excluded.subject),
@@ -224,7 +249,18 @@ export async function recordUpload(
          camera = COALESCE(excluded.camera, assets.camera),
          lens = COALESCE(excluded.lens, assets.lens),
          original_width = COALESCE(excluded.original_width, assets.original_width),
-         original_height = COALESCE(excluded.original_height, assets.original_height)`,
+         original_height = COALESCE(excluded.original_height, assets.original_height),
+         tags = CASE WHEN assets.tags = '[]' THEN excluded.tags ELSE assets.tags END,
+         alt_default = CASE WHEN assets.alt_default = '' THEN excluded.alt_default ELSE assets.alt_default END,
+         credit = COALESCE(assets.credit, excluded.credit),
+         title = COALESCE(assets.title, excluded.title),
+         creator = COALESCE(assets.creator, excluded.creator),
+         copyright = COALESCE(assets.copyright, excluded.copyright),
+         origin = COALESCE(assets.origin, excluded.origin),
+         source_url = COALESCE(assets.source_url, excluded.source_url),
+         restrictions = COALESCE(assets.restrictions, excluded.restrictions),
+         master_name = COALESCE(assets.master_name, excluded.master_name),
+         license = COALESCE(assets.license, excluded.license)`,
     )
     .bind(
       u.key,
@@ -242,6 +278,17 @@ export async function recordUpload(
       cap.lens ?? null,
       cap.originalWidth ?? null,
       cap.originalHeight ?? null,
+      JSON.stringify([...(d.keywords ?? [])].sort()),
+      d.description ?? '',
+      d.credit ?? null,
+      d.title ?? null,
+      d.creator ?? null,
+      d.copyright ?? null,
+      d.origin ?? null,
+      d.sourceUrl ?? null,
+      d.usageTerms ?? null,
+      d.masterName ?? null,
+      d.license ?? null,
     )
     .run();
 }
@@ -340,6 +387,127 @@ export function parseCaptureHeader(raw: string | undefined): ParsedCapture {
   return { capture: Object.keys(capture).length ? capture : null, problems };
 }
 
+// ---------------------------------------------------------------------------
+// Describe: what the file said about itself
+// ---------------------------------------------------------------------------
+
+/**
+ * One file's describe entry from the prep tool's manifest: the description
+ * and rights fields it read from the file's IPTC, XMP and EXIF, and the name
+ * of the master it found beside the file. Every one seeds an editable field.
+ */
+export interface Describe {
+  title?: string;
+  description?: string;
+  keywords?: string[];
+  creator?: string;
+  credit?: string;
+  copyright?: string;
+  origin?: string;
+  sourceUrl?: string;
+  usageTerms?: string;
+  /** The license bought, as the prep tool recorded it for a stock file. */
+  license?: string;
+  masterName?: string;
+}
+
+/** The longest `X-Describe` header the server will read: fifty keywords and a caption fit easily. */
+export const DESCRIBE_HEADER_MAX = 8192;
+export const DESCRIBE_MAX = {
+  title: 300,
+  description: 1000,
+  creator: 200,
+  credit: 200,
+  copyright: 200,
+  origin: 200,
+  sourceUrl: 2048,
+  usageTerms: 2000,
+  license: 200,
+  masterName: 200,
+  keywords: 100,
+  keyword: 60,
+} as const;
+
+export interface ParsedDescribe {
+  describe: Describe | null;
+  problems: string[];
+}
+
+const oneLine = (s: string) => s.replace(/\s+/g, ' ').trim();
+/** Control characters other than a line break: a restrictions text may have lines. */
+const hasControlButNewline = (s: string) =>
+  [...s].some((ch) => {
+    const c = ch.charCodeAt(0);
+    return (c < 32 && c !== 10 && c !== 13) || c === 127;
+  });
+
+/**
+ * The `X-Describe` header, percent-encoded JSON like `X-Capture`, and read
+ * the same way: a header that cannot be read is dropped and said so, a field
+ * that fails its check is dropped on its own, unknown keys are ignored.
+ * Keywords go through `parseTags`, so a manifest's keywords obey the rules
+ * typed tags do. A source URL must be http(s), as the Rights form requires.
+ */
+export function parseDescribeHeader(raw: string | undefined): ParsedDescribe {
+  if (raw === undefined || raw === '') return { describe: null, problems: [] };
+  if (raw.length > DESCRIBE_HEADER_MAX)
+    return { describe: null, problems: [`X-Describe is over ${DESCRIBE_HEADER_MAX} characters.`] };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(decodeURIComponent(raw));
+  } catch {
+    return { describe: null, problems: ['X-Describe is not percent-encoded JSON.'] };
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed))
+    return { describe: null, problems: ['X-Describe is not a JSON object.'] };
+  const o = parsed as Record<string, unknown>;
+  const problems: string[] = [];
+  const describe: Describe = {};
+  const text = (k: Exclude<keyof Describe, 'keywords'>, max: number, keepLines = false) => {
+    const v = o[k];
+    if (v === undefined || v === null) return;
+    const s = typeof v === 'string' ? (keepLines ? v.trim() : oneLine(v)) : '';
+    if (s === '' || s.length > max || (keepLines ? hasControlButNewline(s) : hasControl(s))) {
+      problems.push(`${k}: not text under ${max} characters.`);
+      return;
+    }
+    describe[k] = s;
+  };
+  text('title', DESCRIBE_MAX.title);
+  text('description', DESCRIBE_MAX.description);
+  text('creator', DESCRIBE_MAX.creator);
+  text('credit', DESCRIBE_MAX.credit);
+  text('copyright', DESCRIBE_MAX.copyright);
+  text('origin', DESCRIBE_MAX.origin);
+  text('masterName', DESCRIBE_MAX.masterName);
+  text('license', DESCRIBE_MAX.license);
+  text('usageTerms', DESCRIBE_MAX.usageTerms, true);
+  text('sourceUrl', DESCRIBE_MAX.sourceUrl);
+  if (describe.sourceUrl !== undefined) {
+    let protocol = '';
+    try {
+      protocol = new URL(describe.sourceUrl).protocol;
+    } catch {
+      // not a URL; refused below
+    }
+    if (protocol !== 'http:' && protocol !== 'https:') {
+      delete describe.sourceUrl;
+      problems.push('sourceUrl: not an http(s) URL.');
+    }
+  }
+  if (o.keywords !== undefined && o.keywords !== null) {
+    if (!Array.isArray(o.keywords) || !o.keywords.every((k) => typeof k === 'string')) {
+      problems.push('keywords: not a list of words.');
+    } else {
+      const words = parseTags(o.keywords.filter((k) => !hasControl(k)).join(','))
+        .filter((t) => t.length <= DESCRIBE_MAX.keyword)
+        .slice(0, DESCRIBE_MAX.keywords);
+      if (words.length) describe.keywords = words;
+    }
+  }
+  return { describe: Object.keys(describe).length ? describe : null, problems };
+}
+
 /**
  * New bytes under an existing key, through the file page's Replace. The row
  * keeps everything a person set (subject, tags, alt text, credit, the retired
@@ -402,12 +570,30 @@ export interface Filing {
   altPattern?: string | undefined;
   /** One literal default alt text (the file page); wins over the pattern. */
   altDefault?: string | undefined;
+  /** The file page's title; '' clears it, undefined leaves it. */
+  title?: string | undefined;
   /** Rights, already validated (see `checkRights`); '' clears each, undefined leaves it. */
   license?: string | undefined;
   sourceUrl?: string | undefined;
   restrictions?: string | undefined;
   expiresAt?: string | undefined;
+  creator?: string | undefined;
+  copyright?: string | undefined;
+  origin?: string | undefined;
+  masterUrl?: string | undefined;
+  masterName?: string | undefined;
+  /**
+   * A folder every selected file's master sits in: each key whose master name
+   * is recorded gets `masterBase/<name>` as its master URL, the others are left
+   * alone (a Drive folder link takes no file name, so the record then says
+   * "in this folder, named this"). Wins over `masterUrl`.
+   */
+  masterBase?: string | undefined;
 }
+
+/** `base/<name>`: one slash between, the name percent-encoded as a path segment. */
+export const masterUrlIn = (base: string, name: string): string =>
+  `${base.replace(/\/+$/, '')}/${encodeURIComponent(name)}`;
 
 // ---------------------------------------------------------------------------
 // Rights: license, source, restrictions and expiry
@@ -418,10 +604,25 @@ export interface Rights {
   sourceUrl: string;
   restrictions: string;
   expiresAt: string;
+  creator: string;
+  copyright: string;
+  origin: string;
+  masterUrl: string;
+  masterName: string;
 }
 
 /** Bounds on the free-text fields, so a pasted contract does not become a row. */
-export const RIGHTS_MAX = { license: 200, sourceUrl: 2048, restrictions: 2000 } as const;
+export const RIGHTS_MAX = {
+  license: 200,
+  sourceUrl: 2048,
+  restrictions: 2000,
+  creator: 200,
+  copyright: 200,
+  origin: 200,
+  masterUrl: 2048,
+  masterName: 200,
+  title: 300,
+} as const;
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -443,8 +644,10 @@ export function plusDays(date: string, days: number): string {
 
 /**
  * Validates what a form sent for the rights fields. Each may be blank; a
- * source URL must be http(s), an expiry a real date, and the texts bounded.
- * The first problem is returned as a message for the flash.
+ * source URL must be http(s), a master URL any URL with a scheme (s3://,
+ * azure:// and the like open in the team's own tools), an expiry a real date,
+ * and the texts bounded. The first problem is returned as a message for the
+ * flash.
  */
 export function checkRights(
   raw: Partial<Rights>,
@@ -453,8 +656,25 @@ export function checkRights(
   const sourceUrl = (raw.sourceUrl ?? '').trim();
   const restrictions = (raw.restrictions ?? '').trim();
   const expiresAt = (raw.expiresAt ?? '').trim();
+  const creator = oneLine(raw.creator ?? '');
+  const copyright = oneLine(raw.copyright ?? '');
+  const origin = oneLine(raw.origin ?? '');
+  const masterUrl = (raw.masterUrl ?? '').trim();
+  const masterName = oneLine(raw.masterName ?? '');
   if (license.length > RIGHTS_MAX.license)
     return { ok: false, error: `License: at most ${RIGHTS_MAX.license} characters.` };
+  if (creator.length > RIGHTS_MAX.creator)
+    return { ok: false, error: `Creator: at most ${RIGHTS_MAX.creator} characters.` };
+  if (copyright.length > RIGHTS_MAX.copyright)
+    return { ok: false, error: `Copyright: at most ${RIGHTS_MAX.copyright} characters.` };
+  if (origin.length > RIGHTS_MAX.origin)
+    return { ok: false, error: `Origin: at most ${RIGHTS_MAX.origin} characters.` };
+  if (masterName.length > RIGHTS_MAX.masterName)
+    return { ok: false, error: `Master name: at most ${RIGHTS_MAX.masterName} characters.` };
+  if (masterUrl.length > RIGHTS_MAX.masterUrl)
+    return { ok: false, error: `Master URL: at most ${RIGHTS_MAX.masterUrl} characters.` };
+  if (masterUrl !== '' && !isMasterUrl(masterUrl))
+    return { ok: false, error: 'Master URL must be a link with a scheme, like https:// or s3://.' };
   if (sourceUrl.length > RIGHTS_MAX.sourceUrl)
     return { ok: false, error: `Source URL: at most ${RIGHTS_MAX.sourceUrl} characters.` };
   if (sourceUrl !== '') {
@@ -471,7 +691,68 @@ export function checkRights(
     return { ok: false, error: `Restrictions: at most ${RIGHTS_MAX.restrictions} characters.` };
   if (expiresAt !== '' && !isIsoDate(expiresAt))
     return { ok: false, error: 'Expires: a date as YYYY-MM-DD.' };
-  return { ok: true, rights: { license, sourceUrl, restrictions, expiresAt } };
+  return {
+    ok: true,
+    rights: {
+      license,
+      sourceUrl,
+      restrictions,
+      expiresAt,
+      creator,
+      copyright,
+      origin,
+      masterUrl,
+      masterName,
+    },
+  };
+}
+
+/**
+ * A master link: any URL with a scheme and something after it, and no control
+ * characters. A space in the path is allowed, since SharePoint's "Shared
+ * Documents" has one; the browser encodes it on the way out.
+ */
+export function isMasterUrl(s: string): boolean {
+  if (hasControl(s)) return false;
+  try {
+    const u = new URL(s);
+    return u.protocol.length > 1 && s.length > u.protocol.length + 1;
+  } catch {
+    return false;
+  }
+}
+
+/** Where a master link points, judged by its host or scheme, for a glyph and a label. */
+export interface MasterProvider {
+  /** A short code for the glyph: letters, never a vendor's mark. */
+  code: string;
+  label: string;
+}
+
+export function masterProvider(url: string): MasterProvider {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return { code: 'URL', label: 'Link' };
+  }
+  const host = u.hostname.toLowerCase();
+  const scheme = u.protocol.replace(/:$/, '');
+  const on = (...hosts: string[]) =>
+    hosts.some((h) => (h.startsWith('.') ? host.endsWith(h) : host === h));
+  if (on('drive.google.com', 'docs.google.com')) return { code: 'GD', label: 'Google Drive' };
+  if (on('.sharepoint.com', '.sharepoint.us')) return { code: 'SP', label: 'SharePoint' };
+  if (on('onedrive.live.com', '1drv.ms', '.sharepoint-df.com'))
+    return { code: 'OD', label: 'OneDrive' };
+  if (scheme === 's3' || on('.amazonaws.com')) return { code: 'S3', label: 'Amazon S3' };
+  if (scheme === 'azure' || scheme === 'wasb' || scheme === 'wasbs' || on('.blob.core.windows.net'))
+    return { code: 'AZ', label: 'Azure Blob' };
+  if (on('dropbox.com', '.dropbox.com', 'dropboxusercontent.com'))
+    return { code: 'DB', label: 'Dropbox' };
+  if (on('box.com', '.box.com')) return { code: 'BX', label: 'Box' };
+  if (scheme === 'file' || scheme === 'smb' || scheme === 'afp')
+    return { code: 'NAS', label: 'Network share' };
+  return { code: 'URL', label: host || scheme };
 }
 
 export const parseTags = (text: string): string[] => [
@@ -518,14 +799,16 @@ export async function fileAssets(
       db
         .prepare(
           `INSERT INTO assets (key, source, first_seen, subject, tags, alt_default, credit, filed_by, filed_at,
-             license, source_url, restrictions, expires_at)
-           VALUES (?1, 'other', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?10, ?11, ?12, ?13)
+             license, source_url, restrictions, expires_at, title, creator, copyright, origin, master_url, master_name)
+           VALUES (?1, 'other', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
            ON CONFLICT(key) DO UPDATE SET subject = excluded.subject, tags = excluded.tags, alt_default = excluded.alt_default,
              credit = excluded.credit,
              filed_by = CASE WHEN ?9 = 1 THEN excluded.filed_by ELSE assets.filed_by END,
              filed_at = CASE WHEN ?9 = 1 THEN excluded.filed_at ELSE assets.filed_at END,
              license = excluded.license, source_url = excluded.source_url,
-             restrictions = excluded.restrictions, expires_at = excluded.expires_at`,
+             restrictions = excluded.restrictions, expires_at = excluded.expires_at,
+             title = excluded.title, creator = excluded.creator, copyright = excluded.copyright,
+             origin = excluded.origin, master_url = excluded.master_url, master_name = excluded.master_name`,
         )
         .bind(
           key,
@@ -541,6 +824,14 @@ export async function fileAssets(
           keep(filing.sourceUrl, current?.source_url),
           keep(filing.restrictions, current?.restrictions),
           keep(filing.expiresAt, current?.expires_at),
+          keep(filing.title, current?.title),
+          keep(filing.creator, current?.creator),
+          keep(filing.copyright, current?.copyright),
+          keep(filing.origin, current?.origin),
+          filing.masterBase !== undefined && current?.master_name
+            ? masterUrlIn(filing.masterBase, current.master_name)
+            : keep(filing.masterUrl, current?.master_url),
+          keep(filing.masterName, current?.master_name),
         ),
     );
   }
@@ -685,12 +976,22 @@ export async function countDuplicateKeys(db: Db): Promise<number> {
 }
 
 // ---------------------------------------------------------------------------
-// Search: the FTS5 index over key, subject, tags, alt text, credit, camera and lens
+// Search: the FTS5 index over key, subject, tags, alt text, credit, camera, lens, title and creator
 // ---------------------------------------------------------------------------
 
-/** unfiled and filed are both live rows; retired is its own state whatever the subject. */
-export type SearchState = 'all' | 'unfiled' | 'filed' | 'retired';
-export const SEARCH_STATES: readonly SearchState[] = ['all', 'unfiled', 'filed', 'retired'];
+/**
+ * unfiled and filed are both live rows; retired is its own state whatever the
+ * subject; no-master is the live rows with neither a master link nor a master
+ * in the bucket, the gap a team closes by hand.
+ */
+export type SearchState = 'all' | 'unfiled' | 'filed' | 'retired' | 'no-master';
+export const SEARCH_STATES: readonly SearchState[] = [
+  'all',
+  'unfiled',
+  'filed',
+  'retired',
+  'no-master',
+];
 
 export interface SearchFilters {
   /** Free text; '' lists everything the filters allow, newest first. */
@@ -754,10 +1055,10 @@ interface SearchSql {
 
 /**
  * The FROM and WHERE for a search. With a query, the matched rowids and their
- * bm25 rank come from the index (subject and tags weigh most, then alt text,
- * then the path, credit, camera and lens); the filters then apply to the
- * joined rows. A facet leaves its own filter out, so the list offers the
- * other values.
+ * bm25 rank come from the index (subject, tags and title weigh most, then alt
+ * text and the creator, then the path, credit, camera and lens); the filters
+ * then apply to the joined rows. A facet leaves its own filter out, so the
+ * list offers the other values.
  */
 type FacetKind = 'subject' | 'tag' | 'camera';
 
@@ -769,7 +1070,7 @@ function searchSql(f: SearchFilters, omit: FacetKind | null = null): SearchSql {
   };
   const match = ftsQuery(f.q);
   const from = match
-    ? `assets a JOIN (SELECT rowid, bm25(assets_fts, 1.0, 3.0, 3.0, 2.0, 1.0, 1.0, 1.0) AS rank
+    ? `assets a JOIN (SELECT rowid, bm25(assets_fts, 1.0, 3.0, 3.0, 2.0, 1.0, 1.0, 1.0, 3.0, 2.0) AS rank
          FROM assets_fts WHERE assets_fts MATCH ${bind(match)}) m ON m.rowid = a.rowid`
     : 'assets a';
   const clauses: string[] = [];
@@ -780,6 +1081,8 @@ function searchSql(f: SearchFilters, omit: FacetKind | null = null): SearchSql {
   if (f.state === 'unfiled') clauses.push('a.subject IS NULL AND a.retired = 0');
   else if (f.state === 'filed') clauses.push('a.subject IS NOT NULL AND a.retired = 0');
   else if (f.state === 'retired') clauses.push('a.retired = 1');
+  else if (f.state === 'no-master')
+    clauses.push('a.master_url IS NULL AND a.master_key IS NULL AND a.retired = 0');
   return { from, where: clauses.join(' AND '), params };
 }
 

@@ -32,9 +32,11 @@ import {
   listUnfiled,
   type PrecheckEntry,
   parseCaptureHeader,
+  parseDescribeHeader,
   parseFocal,
   parseTags,
   precheck,
+  RIGHTS_MAX,
   recordReplace,
   recordUpload,
   replacePrecheck,
@@ -122,6 +124,12 @@ export function libraryRoutes(deps: AppDeps) {
     'source_url',
     'restrictions',
     'expires_at',
+    'title',
+    'creator',
+    'copyright',
+    'origin',
+    'master_url',
+    'master_name',
   ] as const;
   function changedFields(before: Asset | null, after: Asset | null): Record<string, unknown> {
     const out: Record<string, unknown> = {};
@@ -337,8 +345,21 @@ export function libraryRoutes(deps: AppDeps) {
       sourceUrl: str(f, 'source_url'),
       restrictions: str(f, 'restrictions'),
       expiresAt: str(f, 'expires_at'),
+      creator: str(f, 'creator'),
+      copyright: str(f, 'copyright'),
+      origin: str(f, 'origin'),
+      masterUrl: str(f, 'master_url'),
+      masterName: str(f, 'master_name'),
     });
     if (!rights.ok) return redirectWith(c, fileBack(key), 'error', `Not saved. ${rights.error}`);
+    const title = str(f, 'title').replace(/\s+/g, ' ').trim();
+    if (title.length > RIGHTS_MAX.title)
+      return redirectWith(
+        c,
+        fileBack(key),
+        'error',
+        `Not saved. Title: at most ${RIGHTS_MAX.title} characters.`,
+      );
     const current = await getAsset(deps.db, key);
     await fileAssets(
       deps.db,
@@ -350,6 +371,7 @@ export function libraryRoutes(deps: AppDeps) {
         removeTags: (current?.tags ?? []).filter((t) => !tags.includes(t)),
         credit: str(f, 'credit').trim(),
         altDefault: str(f, 'alt_default').trim(),
+        title,
         ...rights.rights,
       },
       actor(c),
@@ -569,16 +591,23 @@ export function libraryRoutes(deps: AppDeps) {
       addTags: parseTags(str(f, 'add_tags')),
       removeTags: parseTags(str(f, 'remove_tags')),
       credit: opt('credit'),
+      creator: opt('creator'),
       altPattern: opt('alt_pattern'),
       license: opt('license'),
       expiresAt: opt('expires_at'),
+      masterBase: opt('master_base'),
       back: backOf(str(f, 'back', '/library')),
     };
   }
 
   /** The bulk bar's rights fields, checked the same way as the file page's; a message when one is off. */
   const bulkRightsError = (p: BulkPreview): string | null => {
-    const r = checkRights({ license: p.license ?? '', expiresAt: p.expiresAt ?? '' });
+    const r = checkRights({
+      license: p.license ?? '',
+      expiresAt: p.expiresAt ?? '',
+      creator: p.creator ?? '',
+      masterUrl: p.masterBase ?? '',
+    });
     return r.ok ? null : r.error;
   };
 
@@ -591,9 +620,11 @@ export function libraryRoutes(deps: AppDeps) {
       preview.addTags.length === 0 &&
       preview.removeTags.length === 0 &&
       preview.credit === undefined &&
+      preview.creator === undefined &&
       preview.altPattern === undefined &&
       preview.license === undefined &&
-      preview.expiresAt === undefined
+      preview.expiresAt === undefined &&
+      preview.masterBase === undefined
     )
       return redirectWith(c, preview.back, 'warning', 'Nothing to change: fill in the bar first.');
     const problem = bulkRightsError(preview);
@@ -615,9 +646,11 @@ export function libraryRoutes(deps: AppDeps) {
         addTags: preview.addTags,
         removeTags: preview.removeTags,
         credit: preview.credit,
+        creator: preview.creator,
         altPattern: preview.altPattern,
         license: preview.license,
         expiresAt: preview.expiresAt,
+        masterBase: preview.masterBase,
       },
       actor(c),
       deps.now(),
@@ -631,8 +664,10 @@ export function libraryRoutes(deps: AppDeps) {
         addTags: preview.addTags,
         removeTags: preview.removeTags,
         ...(preview.credit !== undefined ? { credit: preview.credit } : {}),
+        ...(preview.creator !== undefined ? { creator: preview.creator } : {}),
         ...(preview.license !== undefined ? { license: preview.license } : {}),
         ...(preview.expiresAt !== undefined ? { expires_at: preview.expiresAt } : {}),
+        ...(preview.masterBase !== undefined ? { master_base: preview.masterBase } : {}),
       },
     });
     return redirectWith(c, preview.back, 'success', `Filed ${n} file${n === 1 ? '' : 's'}.`);
@@ -830,8 +865,13 @@ export function libraryRoutes(deps: AppDeps) {
     };
     // The capture entry is a courtesy from the browser, not a condition of the
     // upload: a bad one is logged and dropped, and the response says what was dropped.
-    const { capture, problems } = parseCaptureHeader(c.req.header('x-capture'));
-    if (problems.length) console.warn(`X-Capture for ${key} partly ignored: ${problems.join(' ')}`);
+    const { capture, problems: captureProblems } = parseCaptureHeader(c.req.header('x-capture'));
+    const { describe, problems: describeProblems } = parseDescribeHeader(
+      c.req.header('x-describe'),
+    );
+    const problems = [...captureProblems, ...describeProblems];
+    if (problems.length)
+      console.warn(`X-Capture/X-Describe for ${key} partly ignored: ${problems.join(' ')}`);
     const warnings = problems.length ? { warnings: problems } : {};
     const record = async (head: { size: number; etag: string | null } | null, action: string) => {
       await recordUpload(
@@ -847,13 +887,18 @@ export function libraryRoutes(deps: AppDeps) {
           height: num('x-height'),
           uploaded_by: who,
           capture,
+          describe,
         },
         deps.now(),
       );
       await logAction(deps.db, {
         actor: who,
         action,
-        detail: { key, bytes: head?.size ?? length },
+        detail: {
+          key,
+          bytes: head?.size ?? length,
+          ...(describe ? { described: Object.keys(describe) } : {}),
+        },
       });
     };
     const existing = await media.head(key);

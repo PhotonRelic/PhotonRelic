@@ -7,8 +7,10 @@ import {
   extensionOf,
   findManifest,
   joinCamera,
+  matchDescribe,
   matchManifest,
   proposeKeys,
+  readAttribution,
   readCapture,
   replaceProblem,
   runQueue,
@@ -351,6 +353,45 @@ describe('the uploader reads capture data without a library', () => {
     expect(matchManifest(entries, at, { version: 2, files: {} }).size).toBe(0);
     expect(matchManifest(entries, at, null).size).toBe(0);
     expect(findManifest([{ relativePath: 'x/a.jpg' }])).toBeNull();
+  });
+
+  it('pairs the describe entries the same way, and reads Artist and Copyright from EXIF', () => {
+    const entries = [
+      { relativePath: 'spring-web/photonrelic-manifest.json' },
+      { relativePath: 'spring-web/a.jpg' },
+      { relativePath: 'spring-web/b.jpg' },
+    ];
+    const manifest = {
+      version: 1,
+      files: {
+        'a.jpg': {
+          capturedAt: '2026-05-04T13:22:10',
+          describe: { title: 'A', keywords: ['x', 'y'], masterName: 'A.ai', gps: 'nope' },
+        },
+        'b.jpg': { describe: {} },
+      },
+    };
+    const matched = matchDescribe(entries, 'spring-web/photonrelic-manifest.json', manifest);
+    expect([...matched.keys()]).toEqual(['spring-web/a.jpg']);
+    expect(matched.get('spring-web/a.jpg')).toEqual({
+      title: 'A',
+      keywords: ['x', 'y'],
+      masterName: 'A.ai',
+    });
+    expect(matchDescribe(entries, 'spring-web/photonrelic-manifest.json', null).size).toBe(0);
+    // The attribution reader looks at IFD0's Artist and Copyright and nothing else.
+    const withCopyright = tiff([
+      [...(SHOT[0] ?? []), ascii(0x8298, '© 2026 A. Person')],
+      SHOT[1] ?? [],
+      SHOT[2] ?? [],
+    ]);
+    expect(readAttribution(jpeg(withCopyright))).toEqual({
+      creator: 'A. Person',
+      copyright: '© 2026 A. Person',
+    });
+    expect(readAttribution(jpeg(tiff([[ascii(0x010f, 'Canon')]])))).toEqual({});
+    expect(readAttribution(jpeg(null))).toEqual({});
+    expect(JSON.stringify(readAttribution(png(withCopyright)))).not.toContain('SERIAL');
   });
 
   it('sends the entry as percent-encoded JSON', () => {
