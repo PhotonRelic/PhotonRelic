@@ -66,8 +66,16 @@ export function parsePrefixes(raw: string | undefined): string[] {
 const KEY_REST =
   /^[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*\.(?:jpe?g|png|webp|avif|gif)$/i;
 
+/**
+ * Masters (the .ai, .psd and raw originals the library keeps beside the web
+ * copies) are never served, whatever SERVED_PREFIXES says: the refusal is in
+ * code, before any configuration is consulted, so no deployment can list
+ * them by mistake.
+ */
+export const MASTERS_PREFIX = 'masters/';
+
 export function isServableKey(key: string, prefixes: readonly string[]): boolean {
-  if (key.includes('..')) return false;
+  if (key.includes('..') || key.startsWith(MASTERS_PREFIX)) return false;
   const prefix = prefixes.find((p) => key.startsWith(p));
   return prefix !== undefined && KEY_REST.test(key.slice(prefix.length));
 }

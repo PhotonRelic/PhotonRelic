@@ -2,6 +2,7 @@ import { DEFAULT_MENU } from '@photonrelic/media-params';
 import { FixedIdentityVerifier, type Identity } from '../src/access.js';
 import { createApp } from '../src/app.jsx';
 import type { AppDeps } from '../src/deps.js';
+import type { MasterSigner } from '../src/masters.js';
 import { layoutFromVars, MemoryMediaBucket } from '../src/media.js';
 import type { PurgeConfig } from '../src/purge.js';
 import { SqliteDb } from './sqlite.js';
@@ -43,6 +44,22 @@ export function fakePurge(answer: () => Response | Promise<Response> = okPurge) 
 
 export const okPurge = () => Response.json({ success: true, errors: [], result: { id: 'x' } });
 
+/** A signer whose URLs name the key and part, so a test can play the browser against the memory bucket. */
+export class FakeSigner implements MasterSigner {
+  readonly origin = 'https://r2.test';
+  readonly signed: string[] = [];
+  async signPut(key: string): Promise<string> {
+    const url = `${this.origin}/bucket/${key}?X-Amz-Expires=900&X-Amz-Signature=put`;
+    this.signed.push(url);
+    return url;
+  }
+  async signPart(key: string, uploadId: string, partNumber: number): Promise<string> {
+    const url = `${this.origin}/bucket/${key}?partNumber=${partNumber}&uploadId=${uploadId}&X-Amz-Expires=900&X-Amz-Signature=part`;
+    this.signed.push(url);
+    return url;
+  }
+}
+
 export function harness(overrides: Partial<AppDeps> = {}) {
   const db = new SqliteDb();
   const media = new MemoryMediaBucket();
@@ -55,6 +72,7 @@ export function harness(overrides: Partial<AppDeps> = {}) {
     usage: null,
     menu: DEFAULT_MENU,
     purge: null,
+    masters: null,
     environment: 'test',
     now: () => new Date('2026-10-30T12:00:00.000Z'),
     ...overrides,

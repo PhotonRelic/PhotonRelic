@@ -9,6 +9,7 @@ import { type App, createApp } from './app.jsx';
 import type { AppDeps } from './deps.js';
 import type { Env } from './env.js';
 import { isoDate, retireExpired } from './library.js';
+import { mastersFromVars } from './masters.js';
 import { layoutFromVars, R2MediaBucket } from './media.js';
 import { AnalyticsEngineUsage, usageConfigFromVars } from './usage.js';
 
@@ -51,6 +52,12 @@ export function depsFromEnv(env: Env): AppDeps {
             fetch: (url, init) => fetch(url, init),
           }
         : null,
+    masters: mastersFromVars({
+      accountId: env.CF_ACCOUNT_ID,
+      bucket: env.MEDIA_BUCKET,
+      accessKeyId: env.R2_ACCESS_KEY_ID,
+      secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+    }),
     environment: env.ENVIRONMENT,
     now: () => new Date(),
   };

@@ -9,6 +9,8 @@ import {
   joinCamera,
   matchDescribe,
   matchManifest,
+  pairMasters,
+  partRanges,
   proposeKeys,
   readAttribution,
   readCapture,
@@ -254,6 +256,31 @@ const webp = (exif: Uint8Array | null) => {
   );
   return cat(text('RIFF'), le32(body.length + 4), text('WEBP'), body);
 };
+
+describe('masters beside web copies', () => {
+  it('pairs a master with the web file of the same name in the same folder only', () => {
+    const pairs = pairMasters([
+      { relativePath: 'shoot/AdobeStock_1.jpg' },
+      { relativePath: 'shoot/AdobeStock_1.ai' },
+      { relativePath: 'shoot/Party Final.PSD' },
+      { relativePath: 'shoot/party final.jpeg' },
+      { relativePath: 'shoot/details/scan.tif' }, // no web copy in details/
+      { relativePath: 'shoot/scan.jpg' },
+      { relativePath: 'shoot/lone.psd' },
+      { relativePath: 'shoot/notes.txt' },
+    ]);
+    expect([...pairs]).toEqual([
+      ['shoot/AdobeStock_1.ai', 'shoot/AdobeStock_1.jpg'],
+      ['shoot/Party Final.PSD', 'shoot/party final.jpeg'],
+    ]);
+    expect(partRanges(0, 10)).toEqual([{ partNumber: 1, start: 0, end: 0 }]);
+    expect(partRanges(25, 10)).toEqual([
+      { partNumber: 1, start: 0, end: 10 },
+      { partNumber: 2, start: 10, end: 20 },
+      { partNumber: 3, start: 20, end: 25 },
+    ]);
+  });
+});
 
 describe('the uploader reads capture data without a library', () => {
   const expected = {

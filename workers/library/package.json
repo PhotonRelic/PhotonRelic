@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@photonrelic/media-params": "workspace:*",
+    "aws4fetch": "1.0.20",
     "hono": "^4.13.14"
   },
   "devDependencies": {

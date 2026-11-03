@@ -14,6 +14,7 @@
  */
 import type { AssetRecord } from '@photonrelic/media-params';
 import type { Db } from './db.js';
+import { MASTERS_PREFIX } from './source.js';
 
 export const DEFAULT_LIMIT = 100;
 export const MAX_LIMIT = 500;
@@ -97,7 +98,12 @@ export async function getFocal(db: Db, key: string): Promise<{ x: number; y: num
 
 /** Under one of the served prefixes, with no traversal. */
 export function isUnderPrefix(key: string, prefixes: readonly string[]): boolean {
-  return Boolean(key) && !key.includes('..') && prefixes.some((p) => key.startsWith(p));
+  return (
+    Boolean(key) &&
+    !key.includes('..') &&
+    !key.startsWith(MASTERS_PREFIX) &&
+    prefixes.some((p) => key.startsWith(p))
+  );
 }
 
 export async function getAsset(db: Db, key: string): Promise<AssetRecord | null> {

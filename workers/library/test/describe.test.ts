@@ -248,20 +248,33 @@ describe('the master link', () => {
     expect(masterProvider('https://drive.google.com/file/d/abc/view')).toEqual({
       code: 'GD',
       label: 'Google Drive',
+      icon: 'google-drive.svg',
     });
     expect(masterProvider('https://acme.sharepoint.com/sites/Marketing/x.ai').code).toBe('SP');
     expect(masterProvider('https://1drv.ms/u/s!abc').code).toBe('OD');
-    expect(masterProvider('s3://bucket/a.ai')).toEqual({ code: 'S3', label: 'Amazon S3' });
+    expect(masterProvider('s3://bucket/a.ai')).toEqual({
+      code: 'S3',
+      label: 'Amazon S3',
+      icon: 'amazon-s3.svg',
+    });
     expect(masterProvider('https://bucket.s3.eu-west-1.amazonaws.com/a.ai').code).toBe('S3');
     expect(masterProvider('https://acme.blob.core.windows.net/masters/a.psd').code).toBe('AZ');
     expect(masterProvider('https://www.dropbox.com/s/abc/a.ai').code).toBe('DB');
+    expect(masterProvider('https://www.box.com/s/abc')).toEqual({
+      code: 'BX',
+      label: 'Box',
+      icon: 'box-white.svg',
+      wide: true,
+    });
     expect(masterProvider('smb://nas/shoots/a.tif')).toEqual({
       code: 'NAS',
       label: 'Network share',
+      icon: null,
     });
     expect(masterProvider('https://files.example.com/a.ai')).toEqual({
       code: 'URL',
       label: 'files.example.com',
+      icon: null,
     });
     expect(masterUrlIn('https://acme.sharepoint.com/sites/M/Shared Documents/', 'A b.ai')).toBe(
       'https://acme.sharepoint.com/sites/M/Shared Documents/A%20b.ai',
@@ -302,7 +315,7 @@ describe('the master link', () => {
       ['copyright', 'creator', 'master_name', 'master_url', 'origin', 'title'].sort(),
     );
     const page = await (await h.req(`/library/file?key=${encodeURIComponent(KEY)}`)).text();
-    expect(page).toContain('provider-gd');
+    expect(page).toContain('/static/vendor/brands/google-drive.svg');
     expect(page).toContain('Google Drive');
     expect(page).toContain('rel="noopener noreferrer"');
   });

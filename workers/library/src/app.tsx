@@ -65,7 +65,8 @@ export function createApp(deps: AppDeps): App {
     "script-src 'self' 'unsafe-eval'",
     "style-src 'self' 'unsafe-inline'",
     "worker-src 'self' blob:",
-    "connect-src 'self'",
+    // Master uploads go straight to R2 by presigned URL, so its endpoint is the one other origin.
+    `connect-src 'self'${deps.masters ? ` ${deps.masters.origin}` : ''}`,
     "form-action 'self'",
     "base-uri 'none'",
     "frame-ancestors 'none'",

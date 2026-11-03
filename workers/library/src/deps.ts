@@ -5,6 +5,7 @@
 import { mediaUrl, type ResizeMenu } from '@photonrelic/media-params';
 import type { AccessVerifier } from './access.js';
 import type { Db } from './db.js';
+import type { MasterSigner } from './masters.js';
 import type { MediaBucket, MediaLayout } from './media.js';
 import type { PurgeConfig } from './purge.js';
 import type { UsageReader } from './usage.js';
@@ -23,6 +24,8 @@ export interface AppDeps {
   menu: ResizeMenu;
   /** How to purge the edge; null leaves cached copies to expire on their own. */
   purge: PurgeConfig | null;
+  /** Signs the browser's direct-to-R2 master uploads; null says masters are not configured. */
+  masters: MasterSigner | null;
   environment: string;
   now: () => Date;
 }

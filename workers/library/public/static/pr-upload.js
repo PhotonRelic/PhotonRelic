@@ -133,6 +133,92 @@ export function replaceProblem(file, key, maxBytes) {
 }
 
 // ---------------------------------------------------------------------------
+// Masters: the original beside a web copy, put straight into R2 by signed URL
+// ---------------------------------------------------------------------------
+
+/** The formats a master may have; the page carries the server's list in data-master-formats. */
+export const MASTER_EXT = /\.(ai|eps|pdf|psd|psb|tiff?|svg|indd|dng|cr2|cr3|nef|arw|raf|orf|rw2|heic|heif)$/i;
+
+/** The stem a master is matched on: the path without its extension, lowercased. */
+const stemOf = (path) => {
+	const dot = path.lastIndexOf('.');
+	return (dot > 0 ? path.slice(0, dot) : path).toLowerCase();
+};
+
+/**
+ * Pair each dropped master with the web-format file of the same name in the
+ * same folder: a Map from the master's relativePath to the web file's. A
+ * master with no web copy beside it is not in the map.
+ */
+export function pairMasters(entries, formats = MASTER_EXT) {
+	const web = new Map();
+	for (const e of entries) {
+		const path = e.relativePath || '';
+		if (UPLOAD_EXT.test(path)) web.set(stemOf(path), path);
+	}
+	const out = new Map();
+	for (const e of entries) {
+		const path = e.relativePath || '';
+		if (UPLOAD_EXT.test(path) || !formats.test(path)) continue;
+		const pair = web.get(stemOf(path));
+		if (pair) out.set(path, pair);
+	}
+	return out;
+}
+
+/** The parts of a file at a part size: [start, end) byte ranges, 1-based part numbers. */
+export function partRanges(size, partBytes) {
+	const out = [];
+	for (let start = 0, n = 1; start < size || n === 1; start += partBytes, n++) out.push({ partNumber: n, start, end: Math.min(size, start + partBytes) });
+	return out;
+}
+
+/**
+ * Uploads a master for the web copy at `key`: asks the library for the plan
+ * (one signed PUT, or a multipart upload with a signed URL per part), puts
+ * the bytes straight into R2, then asks the library to complete and link it.
+ * `onState(text)` reports progress. Throws on any refusal, with `noRetry`
+ * when a retry could not change the answer.
+ */
+export async function uploadMaster(key, file, { replace = false, onState = () => {} } = {}) {
+	const post = async (path, body) => {
+		const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+		const json = await res.json().catch(() => ({}));
+		if (!res.ok || !json.ok) throw Object.assign(new Error(json.error || `HTTP ${res.status}`), { noRetry: res.status !== 500 });
+		return json;
+	};
+	onState('asking for a signed upload');
+	const plan = await post('/library/file/master/start', { key, name: file.name, size: file.size, replace });
+	const putDirect = async (url, blob) => {
+		const res = await fetch(url, { method: 'PUT', body: blob, headers: { 'content-type': 'application/octet-stream' } });
+		if (!res.ok) throw new Error(`the bucket answered ${res.status}`);
+		return (res.headers.get('etag') || '').replace(/^"|"$/g, '');
+	};
+	if (plan.mode === 'single') {
+		onState(`uploading ${fmtBytes(file.size)}`);
+		await putDirect(plan.url, file);
+		onState('completing');
+		return post('/library/file/master/complete', { key, name: file.name, size: file.size });
+	}
+	const parts = [];
+	try {
+		for (const p of plan.parts) {
+			const start = (p.partNumber - 1) * plan.partBytes;
+			const end = Math.min(file.size, start + plan.partBytes);
+			onState(`part ${p.partNumber} of ${plan.parts.length} (${fmtBytes(end - start)})`);
+			const etag = await putDirect(p.url, file.slice(start, end));
+			if (!etag) throw new Error('the bucket returned no ETag for a part (is CORS exposing ETag?)');
+			parts.push({ partNumber: p.partNumber, etag });
+		}
+	} catch (e) {
+		await post('/library/file/master/abort', { masterKey: plan.masterKey, uploadId: plan.uploadId }).catch(() => {});
+		throw e;
+	}
+	onState('completing');
+	return post('/library/file/master/complete', { key, name: file.name, size: file.size, uploadId: plan.uploadId, parts });
+}
+
+// ---------------------------------------------------------------------------
 // Capture: the date, camera and lens the prep tool strips before upload
 // ---------------------------------------------------------------------------
 
@@ -492,6 +578,7 @@ function init() {
 	if (!root || root.dataset.readonly === '1') return;
 	const maxBytes = Number(root.dataset.maxBytes);
 	const prefix = root.dataset.uploadPrefix || 'media/';
+	const mastersOn = root.dataset.masters === '1';
 	const subjectInput = document.getElementById('pr-upload-subject');
 	const keepFolders = document.getElementById('pr-upload-keep-folders');
 	const zone = document.getElementById('pr-dropzone');
@@ -505,7 +592,7 @@ function init() {
 	const countEl = document.getElementById('pr-upload-count');
 	const hash = makeHasher();
 
-	/** @type {Array<{file: File, relativePath: string, key: string|null, problem: string|null, state: string, message: string, sha256?: string, capture?: object|null, describe?: object|null, row?: HTMLTableRowElement}>} */
+	/** @type {Array<{file: File, relativePath: string, key: string|null, problem: string|null, state: string, message: string, sha256?: string, capture?: object|null, describe?: object|null, masterOf?: string, row?: HTMLTableRowElement}>} */
 	let rows = [];
 
 	const setState = (r, state, message = '') => {
@@ -523,7 +610,7 @@ function init() {
 		let bytes = 0;
 		for (const r of rows) {
 			by[r.state] = (by[r.state] || 0) + 1;
-			if (r.state === 'ok' || r.state === 'uploading') bytes += r.file.size;
+			if (r.state === 'ok' || r.state === 'uploading' || r.state === 'master') bytes += r.file.size;
 		}
 		summary.hidden = false;
 		summary.innerHTML = Object.entries(by)
@@ -531,7 +618,7 @@ function init() {
 			.join('') + (bytes ? `<span>to upload: ${fmtBytes(bytes)}</span>` : '');
 		const ready = rows.filter((r) => r.state === 'ok').length;
 		countEl.textContent = String(ready);
-		startBtn.disabled = ready === 0;
+		startBtn.disabled = ready === 0 && !rows.some((r) => r.state === 'master' && rows.some((w) => w.relativePath === r.masterOf && w.state === 'same-file'));
 		retryBtn.hidden = !rows.some((r) => r.state === 'failed');
 		const done = rows.filter((r) => r.state === 'done');
 		if (done.length) {
@@ -559,7 +646,12 @@ function init() {
 			const keyCell = cell('key');
 			cell('num', fmtBytes(r.file.size));
 			cell('st');
-			if (r.key) {
+			if (r.masterOf) {
+				const note = document.createElement('small');
+				note.className = 'muted';
+				note.textContent = `master of ${r.masterOf}`;
+				keyCell.appendChild(note);
+			} else if (r.key) {
 				const input = document.createElement('input');
 				input.type = 'text';
 				input.value = r.key;
@@ -630,6 +722,11 @@ function init() {
 			return;
 		}
 		subjectInput.setCustomValidity('');
+		// A master beside a web copy with the same name goes into the bucket after it, when
+		// masters are configured; otherwise it is left behind with a note.
+		const pairs = pairMasters(entries);
+		const masters = entries.filter((e) => pairs.has(e.relativePath));
+		entries = entries.filter((e) => !pairs.has(e.relativePath));
 		// A prepped folder carries what its files said about themselves; the manifest itself never goes up.
 		const manifestEntry = findManifest(entries);
 		const manifest = manifestEntry ? await readManifest(manifestEntry) : null;
@@ -645,9 +742,38 @@ function init() {
 		const fresh = proposals
 			.filter((p) => !rows.some((r) => r.relativePath === p.file.relativePath && r.file.size === p.file.size))
 			.map((p) => ({ file: p.file.file, relativePath: p.file.relativePath, key: p.key, problem: p.problem, state: p.problem ? 'skipped' : 'waiting', message: p.problem || '', capture: captures.get(p.file.relativePath) ?? null, describe: describes.get(p.file.relativePath) ?? null }));
-		rows = [...rows, ...fresh];
+		const masterRows = masters
+			.filter((m) => !rows.some((r) => r.relativePath === m.relativePath && r.file.size === m.file.size))
+			.map((m) => ({
+				file: m.file,
+				relativePath: m.relativePath,
+				key: null,
+				problem: mastersOn ? null : 'masters are not configured: left behind',
+				masterOf: pairs.get(m.relativePath),
+				state: mastersOn ? 'master' : 'skipped',
+				message: mastersOn ? 'goes up after its web copy' : 'masters are not configured',
+			}));
+		rows = [...rows, ...fresh, ...masterRows];
 		render();
 		await check(fresh);
+	}
+
+	/** Masters go up one at a time after the web copies, each to the key its web copy got. */
+	async function startMasters() {
+		const todo = rows.filter((r) => r.masterOf && r.state === 'master');
+		for (const r of todo) {
+			const pair = rows.find((w) => w.relativePath === r.masterOf);
+			if (!pair?.key || !(pair.state === 'done' || pair.state === 'same-file')) {
+				setState(r, 'failed', 'its web copy did not go up');
+				continue;
+			}
+			try {
+				await uploadMaster(pair.key, r.file, { onState: (text) => setState(r, 'uploading', text) });
+				setState(r, 'done', `master of ${pair.key}`);
+			} catch (e) {
+				setState(r, 'failed', String(e?.message ?? e));
+			}
+		}
 	}
 
 	async function uploadOne(r) {
@@ -685,6 +811,7 @@ function init() {
 			retries: 3,
 			onState: (r, state, attempt, err) => setState(r, state, state === 'failed' ? String(err?.message ?? err) : attempt > 1 ? `attempt ${attempt}` : ''),
 		});
+		await startMasters();
 		refreshSummary();
 	}
 
@@ -790,7 +917,61 @@ function initReplace() {
 	});
 }
 
+/** The file page's master upload: one file, straight into R2, then linked. */
+function initMaster() {
+	const root = document.getElementById('pr-master');
+	const input = document.getElementById('pr-master-file');
+	if (!root || !input) return;
+	const key = root.dataset.key;
+	const formats = new RegExp(`\\.(${(root.dataset.formats || '').split(',').filter(Boolean).join('|')})$`, 'i');
+	const maxBytes = Number(root.dataset.maxBytes);
+	const hasMaster = root.dataset.hasMaster === '1';
+	const state = document.getElementById('pr-master-state');
+	const button = document.getElementById('pr-master-start');
+	const replaceBox = document.getElementById('pr-master-replace');
+	let file = null;
+
+	const show = (cls, text) => {
+		state.hidden = false;
+		state.className = `upload-summary st st-${cls}`;
+		state.textContent = text;
+	};
+
+	input.addEventListener('change', () => {
+		file = input.files[0] || null;
+		button.disabled = true;
+		if (!file) return;
+		if (!formats.test(file.name)) {
+			show('bad-name', `${file.name}: not a master format`);
+			file = null;
+			return;
+		}
+		if (file.size > maxBytes) {
+			show('too-big', `${file.name}: over ${fmtBytes(maxBytes)}`);
+			file = null;
+			return;
+		}
+		show('ok', `${file.name} (${fmtBytes(file.size)}) will be the master of ${key}${hasMaster ? ' (tick Replace to put it over the one on file)' : ''}`);
+		button.disabled = false;
+	});
+
+	button.addEventListener('click', async () => {
+		if (!file) return;
+		button.disabled = true;
+		input.disabled = true;
+		try {
+			await uploadMaster(key, file, { replace: Boolean(replaceBox?.checked), onState: (text) => show('uploading', `${file.name} · ${text}`) });
+			location.assign(`/library/file?key=${encodeURIComponent(key)}`);
+		} catch (e) {
+			show('failed', String(e?.message ?? e));
+			input.disabled = false;
+			button.disabled = false;
+		}
+	});
+}
+
 if (typeof document !== 'undefined') {
 	init();
 	initReplace();
+	initMaster();
 }

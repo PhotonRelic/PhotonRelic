@@ -485,6 +485,10 @@ nav.tabs a:hover { color: var(--pr-highlight); }
 .replace-file { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid var(--pr-border-soft); }
 .replace-file summary { color: var(--pr-cta); }
 .replace-file button { width: auto; }
+.master-file { margin-top: 1.2rem; padding-top: 0.8rem; border-top: 1px solid var(--pr-border-soft); }
+.master-file summary { color: var(--pr-structure-text); }
+.master-file button { width: auto; }
+.master-file .retire-form { margin-top: 0.8rem; }
 .tile-select { position: absolute; top: 0.6rem; left: 0.6rem; z-index: 2; display: flex; align-items: center; gap: 0.3rem; margin: 0; padding: 0.15rem 0.45rem; background: rgba(18, 7, 31, 0.8); border: 1px solid var(--pr-border); border-radius: 4px; font-size: 0.72rem; }
 .tile-select input { margin: 0; }
 .tile-chips { margin: 0.2rem 0; }
@@ -498,6 +502,8 @@ nav.tabs a:hover { color: var(--pr-highlight); }
 .provider-sp, .provider-od, .provider-az { border-color: rgba(0, 160, 200, 0.5); }
 .provider-s3 { border-color: rgba(255, 153, 0, 0.5); }
 .provider-db, .provider-bx { border-color: rgba(0, 120, 255, 0.35); }
+.provider-icon { width: 16px; height: 16px; vertical-align: -3px; margin-right: 2px; }
+.provider-icon-wide { width: 50px; height: auto; vertical-align: -6px; margin: 0 6px 0 2px; }
 .master-link a { text-decoration: none; }
 .tile-creator { margin-top: -0.3rem; }
 .tile-unfiled { border-color: rgba(255, 204, 0, 0.35); }

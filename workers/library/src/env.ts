@@ -41,4 +41,9 @@ export interface Env {
   ANALYTICS_TOKEN?: string;
   /** The resizer's dataset name; default `photonrelic_usage`. */
   USAGE_DATASET?: string;
+  /** The media bucket's name (the same as the MEDIA binding's), for signing master uploads. */
+  MEDIA_BUCKET?: string;
+  /** Secrets: an R2 API token (Object Read & Write on the one bucket) that signs master uploads. */
+  R2_ACCESS_KEY_ID?: string;
+  R2_SECRET_ACCESS_KEY?: string;
 }
