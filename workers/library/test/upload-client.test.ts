@@ -247,7 +247,7 @@ const riffChunk = (type: string, data: Uint8Array | number[]) =>
 const webp = (exif: Uint8Array | null) => {
   const body = cat(
     riffChunk('VP8X', [exif ? 0x08 : 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-    riffChunk('VP8 ', [1, 2, 3]), // odd length: the reader must honour the pad byte
+    riffChunk('VP8 ', [1, 2, 3]), // odd length: the reader must honor the pad byte
     exif ? riffChunk('EXIF', exif) : [],
   );
   return cat(text('RIFF'), le32(body.length + 4), text('WEBP'), body);

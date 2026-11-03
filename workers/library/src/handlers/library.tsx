@@ -118,7 +118,7 @@ export function libraryRoutes(deps: AppDeps) {
     'tags',
     'alt_default',
     'credit',
-    'licence',
+    'license',
     'source_url',
     'restrictions',
     'expires_at',
@@ -333,7 +333,7 @@ export function libraryRoutes(deps: AppDeps) {
       return redirectWith(c, '/library', 'error', 'No such key.');
     const tags = parseTags(str(f, 'tags'));
     const rights = checkRights({
-      licence: str(f, 'licence'),
+      license: str(f, 'license'),
       sourceUrl: str(f, 'source_url'),
       restrictions: str(f, 'restrictions'),
       expiresAt: str(f, 'expires_at'),
@@ -570,7 +570,7 @@ export function libraryRoutes(deps: AppDeps) {
       removeTags: parseTags(str(f, 'remove_tags')),
       credit: opt('credit'),
       altPattern: opt('alt_pattern'),
-      licence: opt('licence'),
+      license: opt('license'),
       expiresAt: opt('expires_at'),
       back: backOf(str(f, 'back', '/library')),
     };
@@ -578,7 +578,7 @@ export function libraryRoutes(deps: AppDeps) {
 
   /** The bulk bar's rights fields, checked the same way as the file page's; a message when one is off. */
   const bulkRightsError = (p: BulkPreview): string | null => {
-    const r = checkRights({ licence: p.licence ?? '', expiresAt: p.expiresAt ?? '' });
+    const r = checkRights({ license: p.license ?? '', expiresAt: p.expiresAt ?? '' });
     return r.ok ? null : r.error;
   };
 
@@ -592,7 +592,7 @@ export function libraryRoutes(deps: AppDeps) {
       preview.removeTags.length === 0 &&
       preview.credit === undefined &&
       preview.altPattern === undefined &&
-      preview.licence === undefined &&
+      preview.license === undefined &&
       preview.expiresAt === undefined
     )
       return redirectWith(c, preview.back, 'warning', 'Nothing to change: fill in the bar first.');
@@ -616,7 +616,7 @@ export function libraryRoutes(deps: AppDeps) {
         removeTags: preview.removeTags,
         credit: preview.credit,
         altPattern: preview.altPattern,
-        licence: preview.licence,
+        license: preview.license,
         expiresAt: preview.expiresAt,
       },
       actor(c),
@@ -631,7 +631,7 @@ export function libraryRoutes(deps: AppDeps) {
         addTags: preview.addTags,
         removeTags: preview.removeTags,
         ...(preview.credit !== undefined ? { credit: preview.credit } : {}),
-        ...(preview.licence !== undefined ? { licence: preview.licence } : {}),
+        ...(preview.license !== undefined ? { license: preview.license } : {}),
         ...(preview.expiresAt !== undefined ? { expires_at: preview.expiresAt } : {}),
       },
     });

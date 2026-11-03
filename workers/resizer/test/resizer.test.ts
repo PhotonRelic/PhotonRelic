@@ -232,7 +232,7 @@ describe('resized on request', () => {
     expect(res.headers.get('cache-control')).toBe('no-store');
   });
 
-  it('honours a custom menu', async () => {
+  it('honors a custom menu', async () => {
     const h = harness({ menu: menuFromLists('500', '2:1') });
     expect((await h.get('/media/workshop/bench.jpg?w=500&ar=2:1')).status).toBe(200);
     expect((await h.get('/media/workshop/bench.jpg?w=768')).status).toBe(400);
@@ -391,7 +391,7 @@ describe('embedding allowlist', () => {
   it('serves allowed pages and echoes their origin', async () => {
     const h = harness({ embed: policy });
     const res = await h.get('/media/workshop/bench.jpg', {
-      referer: 'https://www.example.com/catalogue?page=2',
+      referer: 'https://www.example.com/catalog?page=2',
     });
     expect(res.status).toBe(200);
     expect(res.headers.get('access-control-allow-origin')).toBe('https://www.example.com');

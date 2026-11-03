@@ -55,7 +55,7 @@ export interface MediaBucket {
   ): Promise<MediaListing>;
 }
 
-/** What the library stamps on every object it uploads, so a rescan can recognise its own. */
+/** What the library stamps on every object it uploads, so a rescan can recognize its own. */
 export const UPLOAD_SOURCE_TAG = 'photonrelic';
 
 // ---------------------------------------------------------------------------

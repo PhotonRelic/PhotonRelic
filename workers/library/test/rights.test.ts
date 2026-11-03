@@ -43,7 +43,7 @@ describe('rights migration', () => {
       .all()
       .map((c) => c as { name: string; notnull: number });
     const names = columns.map((c) => c.name);
-    for (const col of ['licence', 'source_url', 'restrictions', 'expires_at']) {
+    for (const col of ['license', 'source_url', 'restrictions', 'expires_at']) {
       expect(names).toContain(col);
       expect(columns.find((c) => c.name === col)?.notnull).toBe(0);
     }
@@ -58,7 +58,7 @@ describe('rights migration', () => {
 describe('rights validation', () => {
   it('accepts blanks and well-formed values, trimmed', () => {
     const r = checkRights({
-      licence: ' CC BY 4.0 ',
+      license: ' CC BY 4.0 ',
       sourceUrl: 'https://example.com/photo ',
       restrictions: 'editorial only',
       expiresAt: '2026-12-31',
@@ -66,7 +66,7 @@ describe('rights validation', () => {
     expect(r).toEqual({
       ok: true,
       rights: {
-        licence: 'CC BY 4.0',
+        license: 'CC BY 4.0',
         sourceUrl: 'https://example.com/photo',
         restrictions: 'editorial only',
         expiresAt: '2026-12-31',
@@ -93,8 +93,8 @@ describe('rights validation', () => {
   });
 
   it('bounds the text fields', () => {
-    expect(checkRights({ licence: 'x'.repeat(201) })).toMatchObject({ ok: false });
-    expect(checkRights({ licence: 'x'.repeat(200) })).toMatchObject({ ok: true });
+    expect(checkRights({ license: 'x'.repeat(201) })).toMatchObject({ ok: false });
+    expect(checkRights({ license: 'x'.repeat(200) })).toMatchObject({ ok: true });
     expect(checkRights({ restrictions: 'x'.repeat(2001) })).toMatchObject({ ok: false });
     expect(checkRights({ sourceUrl: `https://example.com/${'x'.repeat(2048)}` })).toMatchObject({
       ok: false,
@@ -109,14 +109,14 @@ describe('file page', () => {
     const save = await h.form('/library/file/save', [
       ['key', 'media/x/a.jpg'],
       ['subject', 'x'],
-      ['licence', 'CC BY 4.0'],
+      ['license', 'CC BY 4.0'],
       ['source_url', 'https://example.com/a'],
       ['restrictions', 'Editorial only'],
       ['expires_at', '2026-12-31'],
     ]);
     expect(save.status).toBe(303);
     expect(await getAsset(h.db, 'media/x/a.jpg')).toMatchObject({
-      licence: 'CC BY 4.0',
+      license: 'CC BY 4.0',
       source_url: 'https://example.com/a',
       restrictions: 'Editorial only',
       expires_at: '2026-12-31',
@@ -124,7 +124,7 @@ describe('file page', () => {
     const audit = (await recentActions(h.db))[0];
     expect(audit?.action).toBe('library.filed');
     expect(audit?.detail?.changed).toEqual({
-      licence: 'CC BY 4.0',
+      license: 'CC BY 4.0',
       source_url: 'https://example.com/a',
       restrictions: 'Editorial only',
       expires_at: '2026-12-31',
@@ -137,10 +137,10 @@ describe('file page', () => {
     await h.form('/library/file/save', [
       ['key', 'media/x/a.jpg'],
       ['subject', 'x'],
-      ['licence', 'CC BY 4.0'],
+      ['license', 'CC BY 4.0'],
     ]);
     expect(await getAsset(h.db, 'media/x/a.jpg')).toMatchObject({
-      licence: 'CC BY 4.0',
+      license: 'CC BY 4.0',
       source_url: null,
       restrictions: null,
       expires_at: null,
@@ -176,14 +176,14 @@ describe('file page', () => {
 });
 
 describe('bulk filing', () => {
-  it('previews and applies a licence and an expiry, and leaves them when blank', async () => {
+  it('previews and applies a license and an expiry, and leaves them when blank', async () => {
     const h = harness();
     await h.media.put('media/x/one.jpg', bytes('1'), 'image/jpeg');
     await h.media.put('media/x/two.jpg', bytes('2'), 'image/jpeg');
     const fields: [string, string][] = [
       ['keys', 'media/x/one.jpg'],
       ['keys', 'media/x/two.jpg'],
-      ['licence', 'Licensed from Studio'],
+      ['license', 'Licensed from Studio'],
       ['expires_at', '2027-01-15'],
       ['back', '/library?prefix=media/x/'],
     ];
@@ -196,12 +196,12 @@ describe('bulk filing', () => {
     expect(apply.status).toBe(303);
     for (const key of ['media/x/one.jpg', 'media/x/two.jpg'])
       expect(await getAsset(h.db, key)).toMatchObject({
-        licence: 'Licensed from Studio',
+        license: 'Licensed from Studio',
         expires_at: '2027-01-15',
       });
     expect((await recentActions(h.db))[0]?.detail).toMatchObject({
       count: 2,
-      licence: 'Licensed from Studio',
+      license: 'Licensed from Studio',
       expires_at: '2027-01-15',
     });
 
@@ -212,7 +212,7 @@ describe('bulk filing', () => {
     ]);
     expect(await getAsset(h.db, 'media/x/one.jpg')).toMatchObject({
       tags: ['hero'],
-      licence: 'Licensed from Studio',
+      license: 'Licensed from Studio',
       expires_at: '2027-01-15',
     });
   });

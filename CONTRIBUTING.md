@@ -6,7 +6,7 @@ is small; when in doubt, open an issue and ask.
 ## Before you start
 
 - **Bugs and small fixes:** open a pull request straight away.
-- **New features or behaviour changes:** open an issue first so we can agree
+- **New features or behavior changes:** open an issue first so we can agree
   on the shape before you write it. PhotonRelic stays deliberately small: a
   fixed resize menu, a bucket-first library, nothing overwritten.
 - **Security problems:** see [SECURITY.md](SECURITY.md); please do not open
@@ -36,18 +36,18 @@ runs on every pull request.
   Write the description for someone reading `git log` in a year: what
   changed and why, not how you got there.
 - Keep the README and the configuration table in step with any new variable
-  or behaviour.
+  or behavior.
 - CI must pass: lint, typecheck, tests. Pull requests from forks skip one
   internal check that maintainers run themselves.
 - Do not include deployment details (hostnames, account or database ids,
   Access tags) in code, tests or messages. Everything under `deploy/` except
   the example is ignored for that reason.
 
-## Licence
+## License
 
 PhotonRelic is licensed under the Apache License, Version 2.0. By
 contributing you agree that your contributions are licensed the same way
-(section 5 of the licence). You may add yourself to [AUTHORS](AUTHORS) in
+(section 5 of the license). You may add yourself to [AUTHORS](AUTHORS) in
 your first pull request if you wish.
 
 ## Conduct
