@@ -492,6 +492,14 @@ nav.tabs a:hover { color: var(--pr-highlight); }
 .chip-filed { border-color: rgba(0, 85, 255, 0.5); background: rgba(0, 85, 255, 0.14); color: var(--pr-structure-text); }
 .chip-unfiled { border-color: rgba(255, 204, 0, 0.5); background: rgba(255, 204, 0, 0.14); color: var(--pr-cta); }
 .chip-retired { border-color: rgba(202, 0, 68, 0.5); background: rgba(202, 0, 68, 0.14); color: var(--pr-danger-text); }
+/* master link: a lettered provider glyph (never a vendor's mark) before the label */
+.provider { display: inline-block; min-width: 1.9em; padding: 1px 4px; border: 1px solid var(--pr-border); border-radius: 4px; font: 600 9px var(--pr-font-mono); letter-spacing: 0.08em; text-align: center; vertical-align: middle; color: var(--pr-text-soft); background: rgba(255, 255, 255, 0.04); }
+.provider-gd { border-color: rgba(0, 85, 255, 0.5); }
+.provider-sp, .provider-od, .provider-az { border-color: rgba(0, 160, 200, 0.5); }
+.provider-s3 { border-color: rgba(255, 153, 0, 0.5); }
+.provider-db, .provider-bx { border-color: rgba(0, 120, 255, 0.35); }
+.master-link a { text-decoration: none; }
+.tile-creator { margin-top: -0.3rem; }
 .tile-unfiled { border-color: rgba(255, 204, 0, 0.35); }
 .tile-retired { opacity: 0.6; }
 .folder-list { columns: 3 14rem; padding-left: 1.2rem; }

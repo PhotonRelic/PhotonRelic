@@ -70,6 +70,11 @@ describe('rights validation', () => {
         sourceUrl: 'https://example.com/photo',
         restrictions: 'editorial only',
         expiresAt: '2026-12-31',
+        creator: '',
+        copyright: '',
+        origin: '',
+        masterUrl: '',
+        masterName: '',
       },
     });
     expect(checkRights({})).toMatchObject({ ok: true });

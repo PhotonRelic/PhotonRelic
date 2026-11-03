@@ -1,8 +1,10 @@
 /**
  * The public metadata API's reads: one asset by key, or a page of assets
  * filtered by prefix, subject and tag, in key order. Only what the library
- * filed about a key leaves here (alt text, dimensions, credit, tags); the
- * hashes, the audit trail and who did what stay behind Access.
+ * filed about a key leaves here (alt text, dimensions, credit, tags, the
+ * title, creator, copyright and origin a file carried); the hashes, the
+ * audit trail, who did what, and where the master is kept stay behind
+ * Access.
  *
  * Keys are checked against the served prefixes only, not the image route's
  * stricter name rule: the library files whatever the bucket holds, spaces
@@ -26,6 +28,10 @@ interface Row {
   tags: string;
   alt_default: string;
   credit: string | null;
+  title: string | null;
+  creator: string | null;
+  copyright: string | null;
+  origin: string | null;
   first_seen: string;
   captured_at: string | null;
   camera: string | null;
@@ -37,7 +43,7 @@ interface Row {
 }
 
 const COLUMNS =
-  'key, bytes, content_type, width, height, subject, tags, alt_default, credit, first_seen, captured_at, camera, lens, original_width, original_height, focal_x, focal_y';
+  'key, bytes, content_type, width, height, subject, tags, alt_default, credit, title, creator, copyright, origin, first_seen, captured_at, camera, lens, original_width, original_height, focal_x, focal_y';
 
 /** A focal point is two halves; one without the other is no point at all. */
 const focalOf = (r: { focal_x: number | null; focal_y: number | null }) =>
@@ -61,6 +67,10 @@ function fromRow(r: Row): AssetRecord {
     tags,
     alt: r.alt_default,
     credit: r.credit,
+    title: r.title,
+    creator: r.creator,
+    copyright: r.copyright,
+    origin: r.origin,
     firstSeen: r.first_seen,
     capturedAt: r.captured_at,
     camera: r.camera,

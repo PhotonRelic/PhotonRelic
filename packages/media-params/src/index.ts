@@ -203,6 +203,15 @@ export interface AssetRecord {
   tags: string[];
   alt: string;
   credit: string | null;
+  /**
+   * What the file said about itself, seeded from its IPTC, XMP or EXIF at
+   * upload and editable since: a title, who made it, the copyright notice,
+   * and where it came from ("Adobe Stock 270140535"). Null when unknown.
+   */
+  title: string | null;
+  creator: string | null;
+  copyright: string | null;
+  origin: string | null;
   /** ISO 8601, when the library first saw the key. */
   firstSeen: string;
   /**

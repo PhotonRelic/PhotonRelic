@@ -4,9 +4,9 @@
 // the drop zone, hashing, precheck and the four-at-a-time streamed PUTs, and
 // the one-file replace that shares the hasher. Nothing is resized here: a
 // file over the cap is refused and prepared on your machine with
-// tools/prep-images.py. What the prep tool strips (capture date, camera,
-// lens) travels with the upload instead: from its manifest, or read from an
-// unprepped file's EXIF.
+// tools/prep-images.py. What the prep tool noted (capture date, camera,
+// lens, and what the file said about itself) travels with the upload: from
+// its manifest, or read from an unprepped file's EXIF.
 
 export const UPLOAD_EXT = /\.(jpe?g|png|webp|avif|gif)$/i;
 /** Formats a shoot exports that the store never takes as they are. */
@@ -139,6 +139,8 @@ export function replaceProblem(file, key, maxBytes) {
 /** Written by tools/prep-images.py into the output folder; never uploaded. */
 export const MANIFEST_NAME = 'photonrelic-manifest.json';
 const CAPTURE_KEYS = ['capturedAt', 'camera', 'lens', 'originalWidth', 'originalHeight'];
+/** The describe entry: what the file said about itself, and the master found beside it. */
+const DESCRIBE_KEYS = ['title', 'description', 'keywords', 'creator', 'credit', 'copyright', 'origin', 'sourceUrl', 'usageTerms', 'license', 'masterName'];
 
 /** The dropped entry that is the manifest, if the folder has one at any level. */
 export function findManifest(entries) {
@@ -168,17 +170,40 @@ export function matchManifest(entries, manifestPath, manifest) {
 	return out;
 }
 
-/** The X-Capture header: JSON, percent-encoded so a camera name is ASCII-safe in a header. */
+/**
+ * Pair each dropped file with its manifest entry's `describe` object, the same
+ * way: only the describe keys, only from a version this uploader knows.
+ */
+export function matchDescribe(entries, manifestPath, manifest) {
+	const out = new Map();
+	if (!manifest || manifest.version !== 1 || typeof manifest.files !== 'object' || manifest.files === null) return out;
+	const dir = manifestPath.slice(0, manifestPath.lastIndexOf('/') + 1);
+	for (const e of entries) {
+		const path = e.relativePath || '';
+		if (!path.startsWith(dir)) continue;
+		const row = manifest.files[path.slice(dir.length)];
+		const d = row && typeof row === 'object' ? row.describe : undefined;
+		if (typeof d !== 'object' || d === null) continue;
+		const entry = {};
+		for (const k of DESCRIBE_KEYS) if (d[k] !== undefined && d[k] !== null) entry[k] = d[k];
+		if (Object.keys(entry).length) out.set(path, entry);
+	}
+	return out;
+}
+
+/** The X-Capture and X-Describe headers: JSON, percent-encoded so a camera name is ASCII-safe in a header. */
 export const captureHeader = (entry) => encodeURIComponent(JSON.stringify(entry));
 
-// A small reader of its own rather than a vendored library: the page needs four
+// A small reader of its own rather than a vendored library: the page needs six
 // tags from IFD0 and the Exif IFD, nothing a full parser offers, and a reader
-// that never visits the GPS IFD, the serial-number tags or Artist cannot leak
-// them by accident. Every offset is bounds-checked; anything odd returns what
-// was read so far, never throws.
+// that never visits the GPS IFD or the serial-number tags cannot leak them by
+// accident. Every offset is bounds-checked; anything odd returns what was read
+// so far, never throws.
 const TAG_MAKE = 0x010f;
 const TAG_MODEL = 0x0110;
 const TAG_DATETIME = 0x0132;
+const TAG_ARTIST = 0x013b;
+const TAG_COPYRIGHT = 0x8298;
 const TAG_EXIF_IFD = 0x8769;
 const TAG_DATETIME_ORIGINAL = 0x9003;
 const TAG_LENS_MODEL = 0xa434;
@@ -203,12 +228,12 @@ export function joinCamera(make, model) {
 	return d.toLowerCase().startsWith(first) ? d : `${m} ${d}`;
 }
 
-/** The fields from a TIFF structure (what EXIF is) at `base` inside the view. */
-function readTiff(view, base, end) {
-	const out = {};
-	if (base + 8 > end) return out;
+/** The wanted ASCII tags of a TIFF structure (what EXIF is) at `base` inside the view, by tag. */
+function tiffFields(view, base, end, ifd0Tags, exifTags) {
+	const wanted = {};
+	if (base + 8 > end) return wanted;
 	const le = view.getUint16(base) === 0x4949; // 'II' little-endian, 'MM' big-endian
-	if (view.getUint16(base) !== (le ? 0x4949 : 0x4d4d) || view.getUint16(base + 2, le) !== 0x2a) return out;
+	if (view.getUint16(base) !== (le ? 0x4949 : 0x4d4d) || view.getUint16(base + 2, le) !== 0x2a) return wanted;
 	const u16 = (o) => view.getUint16(o, le);
 	const u32 = (o) => view.getUint32(o, le);
 	const text = (at, count) => {
@@ -217,7 +242,6 @@ function readTiff(view, base, end) {
 		const clean = s.replace(/\0+$/, '').trim(); // the NUL terminator is counted
 		return clean || null;
 	};
-	const wanted = {};
 	function ifd(offset, tags) {
 		const at = base + offset;
 		if (at < base || at + 2 > end) return;
@@ -234,8 +258,15 @@ function readTiff(view, base, end) {
 			else if (tags.includes(tag) && type === ASCII && count > 0 && count <= 256) wanted[tag] = text(valueAt, count);
 		}
 	}
-	ifd(u32(base + 4), [TAG_MAKE, TAG_MODEL, TAG_DATETIME]);
-	if (wanted.exifIfd !== undefined) ifd(wanted.exifIfd, [TAG_DATETIME_ORIGINAL, TAG_LENS_MODEL]);
+	ifd(u32(base + 4), ifd0Tags);
+	if (exifTags.length && wanted.exifIfd !== undefined) ifd(wanted.exifIfd, exifTags);
+	return wanted;
+}
+
+/** The capture fields from a TIFF structure at `base`. */
+function readTiff(view, base, end) {
+	const out = {};
+	const wanted = tiffFields(view, base, end, [TAG_MAKE, TAG_MODEL, TAG_DATETIME], [TAG_DATETIME_ORIGINAL, TAG_LENS_MODEL]);
 	const when = wanted[TAG_DATETIME_ORIGINAL] || wanted[TAG_DATETIME];
 	const iso = when ? exifDateToIso(when) : null;
 	if (iso) out.capturedAt = iso;
@@ -246,6 +277,15 @@ function readTiff(view, base, end) {
 	return out;
 }
 
+/** The attribution fields from a TIFF structure at `base`: Artist and Copyright, from IFD0 only. */
+function readTiffAttribution(view, base, end) {
+	const out = {};
+	const wanted = tiffFields(view, base, end, [TAG_ARTIST, TAG_COPYRIGHT], []);
+	if (wanted[TAG_ARTIST]) out.creator = wanted[TAG_ARTIST];
+	if (wanted[TAG_COPYRIGHT]) out.copyright = wanted[TAG_COPYRIGHT];
+	return out;
+}
+
 /**
  * The capture fields from the start of a file: JPEG (the APP1 Exif segment,
  * before the first scan), PNG (an eXIf chunk, before IDAT) or WebP (the EXIF
@@ -253,12 +293,22 @@ function readTiff(view, base, end) {
  * that is not one of these, or has none, gives {}.
  */
 export function readCapture(bytes) {
+	return fromExif(bytes, readTiff);
+}
+
+/** The attribution a file carries in its EXIF (Artist, Copyright), for a file the manifest did not cover. */
+export function readAttribution(bytes) {
+	return fromExif(bytes, readTiffAttribution);
+}
+
+/** Finds the EXIF (TIFF) structure in a JPEG, PNG or WebP and hands it to `read`. */
+function fromExif(bytes, read) {
 	const view = bytes instanceof ArrayBuffer ? new DataView(bytes) : new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 	const end = view.byteLength;
 	const tiffAt = (at, len) => {
 		// Some writers put the JPEG prefix "Exif\0\0" in a PNG or WebP chunk too.
-		if (len >= 6 && view.getUint32(at) === 0x45786966 && view.getUint16(at + 4) === 0) return readTiff(view, at + 6, Math.min(end, at + len));
-		return readTiff(view, at, Math.min(end, at + len));
+		if (len >= 6 && view.getUint32(at) === 0x45786966 && view.getUint16(at + 4) === 0) return read(view, at + 6, Math.min(end, at + len));
+		return read(view, at, Math.min(end, at + len));
 	};
 	try {
 		if (end >= 4 && view.getUint16(0) === 0xffd8) {
@@ -361,15 +411,15 @@ async function dimensions(file) {
 const HEAD_BYTES = 1 << 20;
 const EXIF_EXT = /\.(jpe?g|png|webp)$/i;
 
-/** The capture fields from a file's own EXIF, for a file the manifest did not cover. */
-async function captureFrom(file, key) {
-	if (!EXIF_EXT.test(key)) return {};
+/** The capture and attribution fields from a file's own EXIF, for a file the manifest did not cover. */
+async function exifFrom(file, key) {
+	if (!EXIF_EXT.test(key)) return { capture: {}, describe: {} };
 	try {
 		const head = await file.slice(0, HEAD_BYTES).arrayBuffer();
 		const bytes = webpHasExif(head) && file.size > HEAD_BYTES ? await file.arrayBuffer() : head;
-		return readCapture(bytes);
+		return { capture: readCapture(bytes), describe: readAttribution(bytes) };
 	} catch {
-		return {};
+		return { capture: {}, describe: {} };
 	}
 }
 
@@ -455,7 +505,7 @@ function init() {
 	const countEl = document.getElementById('pr-upload-count');
 	const hash = makeHasher();
 
-	/** @type {Array<{file: File, relativePath: string, key: string|null, problem: string|null, state: string, message: string, sha256?: string, capture?: object|null, row?: HTMLTableRowElement}>} */
+	/** @type {Array<{file: File, relativePath: string, key: string|null, problem: string|null, state: string, message: string, sha256?: string, capture?: object|null, describe?: object|null, row?: HTMLTableRowElement}>} */
 	let rows = [];
 
 	const setState = (r, state, message = '') => {
@@ -580,9 +630,11 @@ function init() {
 			return;
 		}
 		subjectInput.setCustomValidity('');
-		// A prepped folder carries the capture data its files lost; the manifest itself never goes up.
+		// A prepped folder carries what its files said about themselves; the manifest itself never goes up.
 		const manifestEntry = findManifest(entries);
-		const captures = manifestEntry ? matchManifest(entries, manifestEntry.relativePath, await readManifest(manifestEntry)) : new Map();
+		const manifest = manifestEntry ? await readManifest(manifestEntry) : null;
+		const captures = manifestEntry ? matchManifest(entries, manifestEntry.relativePath, manifest) : new Map();
+		const describes = manifestEntry ? matchDescribe(entries, manifestEntry.relativePath, manifest) : new Map();
 		const proposals = proposeKeys(
 			entries
 				.filter((e) => e !== manifestEntry)
@@ -592,7 +644,7 @@ function init() {
 		);
 		const fresh = proposals
 			.filter((p) => !rows.some((r) => r.relativePath === p.file.relativePath && r.file.size === p.file.size))
-			.map((p) => ({ file: p.file.file, relativePath: p.file.relativePath, key: p.key, problem: p.problem, state: p.problem ? 'skipped' : 'waiting', message: p.problem || '', capture: captures.get(p.file.relativePath) ?? null }));
+			.map((p) => ({ file: p.file.file, relativePath: p.file.relativePath, key: p.key, problem: p.problem, state: p.problem ? 'skipped' : 'waiting', message: p.problem || '', capture: captures.get(p.file.relativePath) ?? null, describe: describes.get(p.file.relativePath) ?? null }));
 		rows = [...rows, ...fresh];
 		render();
 		await check(fresh);
@@ -616,10 +668,13 @@ function init() {
 		};
 		const dims = await dimensions(r.file);
 		const dimHeaders = dims.width ? { 'x-width': String(dims.width), 'x-height': String(dims.height) } : {};
-		// The manifest's entry when the shoot was prepped; the file's own EXIF when it was not.
-		const capture = r.capture ?? (await captureFrom(r.file, r.key));
+		// The manifest's entries when the shoot was prepped; the file's own EXIF when it was not.
+		const own = r.capture && r.describe ? null : await exifFrom(r.file, r.key);
+		const capture = r.capture ?? own.capture;
+		const describe = r.describe ?? own.describe;
 		const captureHeaders = Object.keys(capture).length ? { 'x-capture': captureHeader(capture) } : {};
-		await put(r.key, r.file, { sha256: r.sha256, headers: { ...dimHeaders, ...captureHeaders } });
+		const describeHeaders = Object.keys(describe).length ? { 'x-describe': captureHeader(describe) } : {};
+		await put(r.key, r.file, { sha256: r.sha256, headers: { ...dimHeaders, ...captureHeaders, ...describeHeaders } });
 	}
 
 	async function start(onlyFailed = false) {

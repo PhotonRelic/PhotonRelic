@@ -49,7 +49,27 @@ export function matchManifest(
   manifestPath: string,
   manifest: unknown,
 ): Map<string, CaptureEntry>;
-export function captureHeader(entry: CaptureEntry): string;
+/** One file's describe entry: what it said about itself, from the manifest or its own EXIF. */
+export interface DescribeEntry {
+  title?: string;
+  description?: string;
+  keywords?: string[];
+  creator?: string;
+  credit?: string;
+  copyright?: string;
+  origin?: string;
+  sourceUrl?: string;
+  usageTerms?: string;
+  license?: string;
+  masterName?: string;
+}
+export function matchDescribe(
+  entries: DroppedEntry[],
+  manifestPath: string,
+  manifest: unknown,
+): Map<string, DescribeEntry>;
+export function captureHeader(entry: CaptureEntry | DescribeEntry): string;
+export function readAttribution(bytes: ArrayBuffer | Uint8Array): DescribeEntry;
 export function exifDateToIso(s: string): string | null;
 export function joinCamera(make: string | null | undefined, model: string | null | undefined): string;
 export function readCapture(bytes: ArrayBuffer | Uint8Array): CaptureEntry;

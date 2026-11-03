@@ -13,7 +13,14 @@ import type {
   SearchFilters,
   SearchState,
 } from '../library.js';
-import { altFromPattern, EXPIRING_DAYS, focalOf, RIGHTS_MAX, SEARCH_STATES } from '../library.js';
+import {
+  altFromPattern,
+  EXPIRING_DAYS,
+  focalOf,
+  masterProvider,
+  RIGHTS_MAX,
+  SEARCH_STATES,
+} from '../library.js';
 import type { MarkupPanelModel } from '../markup.js';
 import {
   basenameOf,
@@ -207,6 +214,11 @@ export function TileGrid({ tiles, preview }: { tiles: Tile[]; preview: Preview }
                 <small class="muted">{asset.tags.join(', ')}</small>
               </p>
             ) : null}
+            {asset?.creator ? (
+              <p class="tile-creator">
+                <small class="muted">by {asset.creator}</small>
+              </p>
+            ) : null}
             <p>
               <CopyButton value={o.key} label="Copy path" />{' '}
               <small class="muted">{kb(o.size)}</small>
@@ -242,6 +254,15 @@ export function BulkBar({ back }: { back: string }) {
           <input type="text" name="credit" placeholder="Photographer (blank leaves it)" />
         </label>
         <label>
+          Creator
+          <input
+            type="text"
+            name="creator"
+            maxlength={RIGHTS_MAX.creator}
+            placeholder="Who made it (blank leaves it)"
+          />
+        </label>
+        <label>
           Default alt text pattern
           <input
             type="text"
@@ -265,6 +286,16 @@ export function BulkBar({ back }: { back: string }) {
             type="date"
             name="expires_at"
             title="The day the rights run out; blank leaves it"
+          />
+        </label>
+        <label>
+          Master folder
+          <input
+            type="text"
+            name="master_base"
+            maxlength={RIGHTS_MAX.masterUrl}
+            placeholder="https://… (files with a recorded master name)"
+            title="A folder the masters sit in: each file whose master name is recorded gets folder/name as its master link"
           />
         </label>
       </div>
@@ -384,9 +415,9 @@ export function SearchPage({
       <p>
         <small class="muted">
           Searches what the library knows about each file: its path, subject, tags, default alt
-          text, credit, and the camera and lens an upload recorded. Only files the library has seen
-          are found, so a file put in the bucket some other way appears here after a Rescan has
-          noted it. Select tiles to file the results in bulk, as in the Library.
+          text, credit, title, creator, and the camera and lens an upload recorded. Only files the
+          library has seen are found, so a file put in the bucket some other way appears here after
+          a Rescan has noted it. Select tiles to file the results in bulk, as in the Library.
         </small>
       </p>
       <form method="get" action="/library/search" class="filter-bar search-bar">
@@ -394,7 +425,7 @@ export function SearchPage({
           type="search"
           name="q"
           value={filters.q}
-          placeholder="Words from the path, tags, alt text, credit or camera…"
+          placeholder="Words from the path, tags, alt text, credit, title, creator or camera…"
           aria-label="Search the library"
           autofocus
         />
@@ -669,6 +700,31 @@ export function UnusedPage({
  * survive. Shown only when something was recorded; a Rescan never fills it,
  * since the Worker does not read image bytes.
  */
+/**
+ * Where the master is: a link with a provider glyph (letters, never a
+ * vendor's mark) and label when there is a URL, the recorded name beside or
+ * instead of it.
+ */
+export function MasterLink({ url, name }: { url: string | null; name: string | null }) {
+  const provider = url ? masterProvider(url) : null;
+  return (
+    <span class="master-link">
+      {url && provider ? (
+        <a href={url} target="_blank" rel="noopener noreferrer" title={url}>
+          <span class={`provider provider-${provider.code.toLowerCase()}`}>{provider.code}</span>{' '}
+          {provider.label}
+        </a>
+      ) : null}
+      {name ? (
+        <>
+          {url ? ' · ' : ''}
+          <code class="path">{name}</code>
+        </>
+      ) : null}
+    </span>
+  );
+}
+
 export function CaptureBlock({ asset }: { asset: Asset | null }) {
   if (!asset) return null;
   const { captured_at, camera, lens, original_width, original_height } = asset;
@@ -969,6 +1025,14 @@ export function FilePage({
                   </td>
                 </tr>
               ) : null}
+              {asset?.master_url || asset?.master_name ? (
+                <tr>
+                  <td>Master</td>
+                  <td>
+                    <MasterLink url={asset.master_url} name={asset.master_name} />
+                  </td>
+                </tr>
+              ) : null}
               <tr>
                 <td>Focal point</td>
                 <td class="num focal-value">
@@ -1004,6 +1068,16 @@ export function FilePage({
               />
             </label>
             <label>
+              Title
+              <input
+                type="text"
+                name="title"
+                value={asset?.title ?? ''}
+                maxlength={RIGHTS_MAX.title}
+                placeholder="What the picture is, in a line"
+              />
+            </label>
+            <label>
               Tags <small class="muted">(comma separated)</small>
               <input type="text" name="tags" value={asset?.tags.join(', ') ?? ''} />
             </label>
@@ -1016,6 +1090,36 @@ export function FilePage({
               <input type="text" name="credit" value={asset?.credit ?? ''} />
             </label>
             <h4>Rights</h4>
+            <label>
+              Creator
+              <input
+                type="text"
+                name="creator"
+                value={asset?.creator ?? ''}
+                maxlength={RIGHTS_MAX.creator}
+                placeholder="Who made it; the name to search for more of their work"
+              />
+            </label>
+            <label>
+              Copyright
+              <input
+                type="text"
+                name="copyright"
+                value={asset?.copyright ?? ''}
+                maxlength={RIGHTS_MAX.copyright}
+                placeholder="© 2026 Someone"
+              />
+            </label>
+            <label>
+              Origin
+              <input
+                type="text"
+                name="origin"
+                value={asset?.origin ?? ''}
+                maxlength={RIGHTS_MAX.origin}
+                placeholder="Adobe Stock 270140535, a commissioned shoot…"
+              />
+            </label>
             <label>
               License
               <input
@@ -1055,6 +1159,34 @@ export function FilePage({
               <small class="muted">
                 A file whose expiry has passed is retired by the daily run and, where the resizer
                 shares this database, answers 410 Gone.
+              </small>
+            </p>
+            <h4>Master</h4>
+            <label>
+              Master URL
+              <input
+                type="text"
+                name="master_url"
+                value={asset?.master_url ?? ''}
+                maxlength={RIGHTS_MAX.masterUrl}
+                placeholder="https://drive.google.com/…, s3://bucket/shoots/…"
+              />
+            </label>
+            <label>
+              Master file name
+              <input
+                type="text"
+                name="master_name"
+                value={asset?.master_name ?? ''}
+                maxlength={RIGHTS_MAX.masterName}
+                placeholder="AdobeStock_270140535.ai"
+              />
+            </label>
+            <p>
+              <small class="muted">
+                The high-resolution or professional-format original this web copy was made from,
+                wherever the team keeps it. The name alone finds it in any backup; the link opens
+                it. Neither leaves the library.
               </small>
             </p>
             <button type="submit">Save</button>
@@ -1418,9 +1550,11 @@ export interface BulkPreview {
   addTags: string[];
   removeTags: string[];
   credit: string | undefined;
+  creator: string | undefined;
   altPattern: string | undefined;
   license: string | undefined;
   expiresAt: string | undefined;
+  masterBase: string | undefined;
   back: string;
 }
 
@@ -1477,12 +1611,32 @@ export function BulkPreviewPage({
             <td>{change(preview.credit)}</td>
           </tr>
           <tr>
+            <td>Creator</td>
+            <td>{change(preview.creator)}</td>
+          </tr>
+          <tr>
             <td>License</td>
             <td>{change(preview.license)}</td>
           </tr>
           <tr>
             <td>Expires</td>
             <td>{change(preview.expiresAt)}</td>
+          </tr>
+          <tr>
+            <td>Master folder</td>
+            <td>
+              {preview.masterBase === undefined ? (
+                <small class="muted">unchanged</small>
+              ) : (
+                <>
+                  <code class="path">{preview.masterBase}</code>{' '}
+                  <small class="muted">
+                    becomes folder/name for each file whose master name is recorded; the others are
+                    left alone
+                  </small>
+                </>
+              )}
+            </td>
           </tr>
         </tbody>
       </table>
@@ -1519,9 +1673,11 @@ export function BulkPreviewPage({
         {hidden('add_tags', preview.addTags.join(','))}
         {hidden('remove_tags', preview.removeTags.join(','))}
         {hidden('credit', preview.credit)}
+        {hidden('creator', preview.creator)}
         {hidden('alt_pattern', preview.altPattern)}
         {hidden('license', preview.license)}
         {hidden('expires_at', preview.expiresAt)}
+        {hidden('master_base', preview.masterBase)}
         <input type="hidden" name="back" value={preview.back} />
         <div class="page-head">
           <button type="submit">Apply to {preview.keys.length}</button>
