@@ -251,11 +251,11 @@ export function BulkBar({ back }: { back: string }) {
           />
         </label>
         <label>
-          Licence
+          License
           <input
             type="text"
-            name="licence"
-            maxlength={RIGHTS_MAX.licence}
+            name="license"
+            maxlength={RIGHTS_MAX.license}
             placeholder="CC BY 4.0 (blank leaves it)"
           />
         </label>
@@ -1017,12 +1017,12 @@ export function FilePage({
             </label>
             <h4>Rights</h4>
             <label>
-              Licence
+              License
               <input
                 type="text"
-                name="licence"
-                value={asset?.licence ?? ''}
-                maxlength={RIGHTS_MAX.licence}
+                name="license"
+                value={asset?.license ?? ''}
+                maxlength={RIGHTS_MAX.license}
                 placeholder="CC BY 4.0, licensed from the photographer…"
               />
             </label>
@@ -1419,7 +1419,7 @@ export interface BulkPreview {
   removeTags: string[];
   credit: string | undefined;
   altPattern: string | undefined;
-  licence: string | undefined;
+  license: string | undefined;
   expiresAt: string | undefined;
   back: string;
 }
@@ -1477,8 +1477,8 @@ export function BulkPreviewPage({
             <td>{change(preview.credit)}</td>
           </tr>
           <tr>
-            <td>Licence</td>
-            <td>{change(preview.licence)}</td>
+            <td>License</td>
+            <td>{change(preview.license)}</td>
           </tr>
           <tr>
             <td>Expires</td>
@@ -1520,7 +1520,7 @@ export function BulkPreviewPage({
         {hidden('remove_tags', preview.removeTags.join(','))}
         {hidden('credit', preview.credit)}
         {hidden('alt_pattern', preview.altPattern)}
-        {hidden('licence', preview.licence)}
+        {hidden('license', preview.license)}
         {hidden('expires_at', preview.expiresAt)}
         <input type="hidden" name="back" value={preview.back} />
         <div class="page-head">
@@ -1638,7 +1638,7 @@ export function ExpiringPage({
               <th />
               <th>Key</th>
               <th class="num">Expires</th>
-              <th>Licence</th>
+              <th>License</th>
               <th />
             </tr>
           </thead>
@@ -1670,7 +1670,7 @@ export function ExpiringPage({
                   {a.expires_at} <ExpiryChip expiresAt={a.expires_at} today={today} />
                 </td>
                 <td>
-                  <small>{a.licence ?? ''}</small>
+                  <small>{a.license ?? ''}</small>
                 </td>
                 <td>
                   <form method="post" action="/library/file/retire" class="inline-form">

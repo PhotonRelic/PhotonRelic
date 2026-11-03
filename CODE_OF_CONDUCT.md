@@ -4,7 +4,7 @@ Be decent to each other. That covers most of it; the rest is detail.
 
 **Expected.** Treat everyone in this project's issues, pull requests and
 discussions with respect. Disagree with ideas, not people. Assume good
-intent, give and take review as help rather than judgement, and remember
+intent, give and take review as help rather than judgment, and remember
 that a maintainer saying no to a change is not a verdict on you.
 
 **Not tolerated.** Harassment, personal attacks, slurs, sexualised language

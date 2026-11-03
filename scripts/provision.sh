@@ -2,7 +2,7 @@
 # Creates what a deployment needs besides the Workers themselves, and writes
 # the resulting ids into its library.toml (and the database id into its
 # resizer.toml, when the resizer binds the database for the metadata API):
-#   - the Zero Trust organisation, if the account has none, with One-time PIN
+#   - the Zero Trust organization, if the account has none, with One-time PIN
 #   - the Access application for the library's hostname, allowing the email
 #     domains in ACCESS_ALLOWED_EMAIL_DOMAINS
 #   - the R2 bucket and the D1 database
@@ -12,7 +12,7 @@
 #
 # Needs CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID and (for the library)
 # ACCESS_ALLOWED_EMAIL_DOMAINS, from the environment or ./.env. To create a
-# Zero Trust organisation, also ACCESS_TEAM_NAME. See deploy/example.
+# Zero Trust organization, also ACCESS_TEAM_NAME. See deploy/example.
 set -eu
 . "$(dirname -- "$0")/lib.sh"
 ENV_DIR=$(env_dir "${1:?usage: provision.sh <environment directory>}")
@@ -27,12 +27,12 @@ if [ -f "$LIB" ]; then
   HOST=$(sed -n 's/.*pattern = "\([^"]*\)".*/\1/p' "$LIB" | head -n 1)
   [ -n "$HOST" ] || { echo "$LIB has no route pattern" >&2; exit 1; }
 
-  echo "== Zero Trust organisation"
+  echo "== Zero Trust organization"
   org=$(cf GET "$A/access/organizations")
   if TEAM_DOMAIN=$(printf '%s' "$org" | json 'r.success && r.result && r.result.auth_domain' 2>/dev/null); then
     echo "   exists: $TEAM_DOMAIN"
   else
-    : "${ACCESS_TEAM_NAME:?no Zero Trust organisation found; set ACCESS_TEAM_NAME to create one}"
+    : "${ACCESS_TEAM_NAME:?no Zero Trust organization found; set ACCESS_TEAM_NAME to create one}"
     res=$(cf POST "$A/access/organizations" "{\"name\":\"$ACCESS_TEAM_NAME\",\"auth_domain\":\"$ACCESS_TEAM_NAME.cloudflareaccess.com\"}")
     ok "$res"
     TEAM_DOMAIN=$(printf '%s' "$res" | json 'r.result.auth_domain')

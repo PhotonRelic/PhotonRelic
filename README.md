@@ -98,9 +98,9 @@ pictureMarkup('https://img.example.com', 'media/products/chair.jpg', {
 - **Uploads never overwrite.** A key that already holds different bytes is refused at upload. The two ways to change an object in place are both on its file page, each a person's deliberate act: **Replace** and **Delete**, which needs a ticked confirmation.
 - **Replace.** New bytes under the same key, for a reshoot or a re-edit that every page already links to. The file must have the key's own extension and be under the cap; the browser hashes it and asks first, so the same bytes again are refused as a no-op. The library checks the hash and the format (a PNG cannot go under a `.jpg` key) before it writes. The subject, tags, alt text, credit and retired state stay; the etag, hash, size and dimensions are replaced, and the audit log records the old and new hash. When a cache purge is configured (below), every copy the edge holds is purged at once; otherwise the edge keeps serving the old image for up to a day. Browsers that already have a copy may keep it for up to an hour, because the resizer sends `max-age=3600`.
 - **Cache purge.** With `CF_ZONE_ID` and the `CACHE_PURGE_TOKEN` secret set, a Replace, a Delete, and a Rescan that finds a key's bytes changed outside the library (`rclone`, the dashboard) purge the stored URL and every size on the resizer's menu from the edge, so the change shows within a minute. The library must know the resizer's menu: set `MEDIA_WIDTHS` and `MEDIA_ASPECTS` on the library too if the resizer overrides them. A purge that fails is a line in the audit log and in the flash, never an error; the write has already happened.
-- **Filing.** Select tiles and file them in bulk: subject, add or remove tags, credit, licence, expiry, and an alt-text pattern using `{name}` and `{subject}`. You see a preview before anything is applied.
+- **Filing.** Select tiles and file them in bulk: subject, add or remove tags, credit, license, expiry, and an alt-text pattern using `{name}` and `{subject}`. You see a preview before anything is applied.
 - **Search.** The box in the header, or the Search tab, finds files by any word of their path, subject, tags, default alt text or credit; the last word matches as a prefix, so results appear as you type. Results can be narrowed by subject, by tag and by state (unfiled, filed, retired), each a link beside the results with its count, and filters work with no words at all: *unfiled* with no query is the unfiled queue, *retired* is everything retired. Matches are ranked by relevance (a hit in the subject or tags outranks one in the path); without a query the newest come first. Results are tiles like the Library's, so a page of them can be selected and filed in bulk. The index is an FTS5 table in D1 kept in step by triggers, and only files the library has seen are in it: something put in the bucket some other way is found after a Rescan, which also rebuilds the index.
-- **Rights.** A file page records a licence, a source URL (http or https), restrictions, and an expiry date (`YYYY-MM-DD`, the day the rights run out). The audit row for a save lists which fields changed.
+- **Rights.** A file page records a license, a source URL (http or https), restrictions, and an expiry date (`YYYY-MM-DD`, the day the rights run out). The audit row for a save lists which fields changed.
 - **Expiring.** The Expiring view lists files already expired and files expiring within 30 days, soonest first, each with a Retire button; the Library page shows a count when there are any. Every night at 03:00 UTC a cron run (`[triggers]` in `wrangler.toml`) retires every file whose expiry date has passed, with the note `Expired <date>`, one audit row per file as `system:expiry` and one `library.expiry_run` row for the run; the run touches only files not yet retired, so repeating it changes nothing. **Run expiry now** on the Expiring view does the same at once, and its audit row names who asked. A retired object stays in the bucket; with the resizer's database binding its URL answers 410.
 - **Focal point.** On a file's page, click the part of the image a crop must keep (a face, a label, the product) and save. Every `?ar=` size the resizer cuts from then on is cropped around that point, and the metadata API carries it so a site cropping with CSS can set `object-position` itself; plain widths are never cropped. **Automatic** clears it and the resizer chooses again. Saving purges the key's cached sizes when a purge is configured (below); otherwise the old crops refresh within a day. Retired files are left alone.
 - **Duplicates.** Keys with identical bytes (matched by R2 etag or SHA-256) are grouped. Keep one and retire the rest; retired objects keep serving.
@@ -172,7 +172,7 @@ a private repo with PhotonRelic as a submodule instead, and point `main`, `asset
    Storage, D1, Access: Apps and Policies, and Access: Organizations, Identity Providers, and Groups
    (account scope) plus Workers Routes and DNS (zone scope); the account id; and the email domains the
    library should let in. Enable R2 in the dashboard once, and Zero Trust if the account has none (the
-   script can create the organisation when `ACCESS_TEAM_NAME` is set and Access has been enabled). For
+   script can create the organization when `ACCESS_TEAM_NAME` is set and Access has been enabled). For
    [usage](#usage), also a second token with Account Analytics Read only, as `ANALYTICS_TOKEN`.
 3. Provision. This creates the Access application (allowing the email domains, One-time PIN sign-in), the
    bucket and the database, and writes the team domain, Audience tag and database id into `library.toml`,
@@ -223,13 +223,13 @@ lists can also be previewed.
 
 The UI is server-rendered with [Hono](https://hono.dev) JSX, styled with [Pico CSS](https://picocss.com) plus the PhotonRelic design system in [`app.css`](workers/library/public/static/app.css) (dark only, glass surfaces, glow for elevation, Chakra Petch for text and IBM Plex Mono for every number). [Alpine.js](https://alpinejs.dev) adds the small interactions. There is no build step for the front end.
 
-Third-party components and their licences are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Third-party components and their licenses are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Contributing and security
 
 Bug reports and pull requests are welcome; [CONTRIBUTING.md](CONTRIBUTING.md) has the short version
 of how. Please report security problems privately, as described in [SECURITY.md](SECURITY.md).
 
-## Licence
+## License
 
-Copyright 2026 The PhotonRelic Authors. Licensed under the [Apache License, Version 2.0](LICENSE); see [NOTICE](NOTICE). Contributions are accepted under the same licence (section 5 of the licence).
+Copyright 2026 The PhotonRelic Authors. Licensed under the [Apache License, Version 2.0](LICENSE); see [NOTICE](NOTICE). Contributions are accepted under the same license (section 5 of the license).

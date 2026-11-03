@@ -15,12 +15,12 @@ photo into a second folder, ready to drop on PhotonRelic's Upload page:
     punctuation a single hyphen, `.jpeg` as `.jpg` (folder names too, since
     subfolders become subject paths);
   * re-encoded, every file, as JPEG at quality 92 (4:4:4 chroma), orientation
-    applied, colour converted to sRGB from any embedded profile, EXIF and every
+    applied, color converted to sRGB from any embedded profile, EXIF and every
     other tag dropped (camera, date, GPS: privacy); PNG stays PNG when it has
     transparency. A file already under the cap is re-encoded too, so the shoot
     is uniform and smaller on disk. "As shot" (menu option 2, --as-shot) is the
     exception: a JPEG keeps its bytes and only loses its tags (the EXIF, XMP,
-    IPTC and comment segments are cut out; the colour profile stays); a JPEG
+    IPTC and comment segments are cut out; the color profile stays); a JPEG
     that needs rotating or is over the cap, and any other format, is re-encoded
     as above and the table says why;
   * noted, before the tags go, in a manifest the Upload page reads: the capture
@@ -241,7 +241,7 @@ def encode(img: Image.Image, fmt: str, quality: int) -> bytes:
     if fmt == "JPEG":
         kwargs = dict(quality=quality, optimize=True, progressive=True)
         if quality >= 90:
-            kwargs["subsampling"] = 0  # 4:4:4 keeps fine texture and colour edges clean
+            kwargs["subsampling"] = 0  # 4:4:4 keeps fine texture and color edges clean
         img.save(buf, "JPEG", **kwargs)  # no exif= and no icc_profile=: metadata is dropped
     else:
         img.save(buf, "PNG", optimize=True)
@@ -249,8 +249,8 @@ def encode(img: Image.Image, fmt: str, quality: int) -> bytes:
 
 
 # JPEG segments cut out "as shot": EXIF and XMP (APP1), IPTC and Photoshop (APP13),
-# comments (COM) and the other APPn. Kept: APP0 (JFIF), APP2 (the ICC colour profile,
-# which holds nothing private) and APP14 (Adobe: tells a decoder how colour is stored),
+# comments (COM) and the other APPn. Kept: APP0 (JFIF), APP2 (the ICC color profile,
+# which holds nothing private) and APP14 (Adobe: tells a decoder how color is stored),
 # plus every table and scan, so the pixels are exactly the camera's.
 DROP_SEGMENTS = {0xE1, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xEB, 0xEC, 0xED, 0xEF, 0xFE}
 ORIENTATION = 0x0112
