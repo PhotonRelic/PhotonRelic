@@ -8,7 +8,7 @@ import {
   variantUrls,
 } from '@photonrelic/media-params';
 import { describe, expect, it } from 'vitest';
-import { decodeCursor, encodeCursor } from '../src/api.js';
+import { decodeCursor, encodeCursor, isUnderPrefix, parseListQuery } from '../src/api.js';
 import {
   CACHE_API,
   CACHE_STAFF_ONLY,
@@ -583,6 +583,22 @@ describe('rights expiry', () => {
     expect(await isExpired(db, 'media/a.jpg', '2026-10-30')).toBe(true);
     expect(await isExpired(db, 'media/a.jpg', '2026-10-29')).toBe(false);
     expect(await isExpired(db, 'media/b.jpg', '2026-10-30')).toBe(false);
+  });
+});
+
+describe('masters are never served', () => {
+  it('refuses masters/ before any prefix is consulted, as an image and in the API', async () => {
+    const h = harness({ prefixes: ['media/', 'masters/'] });
+    h.source.put('masters/psi/party.jpg', png(), 'image/jpeg');
+    h.source.put('masters/psi/party.psd', png(), 'application/octet-stream');
+    expect((await h.get('/masters/psi/party.jpg')).status).toBe(404);
+    expect((await h.get('/masters/psi/party.psd')).status).toBe(404);
+    expect((await h.get('/masters/psi/party.jpg?w=320')).status).toBe(404);
+    expect(isServableKey('masters/psi/party.jpg', ['masters/'])).toBe(false);
+    expect(isUnderPrefix('masters/psi/party.jpg', ['masters/'])).toBe(false);
+    expect((await h.get('/api/v1/assets/masters/psi/party.jpg')).status).toBe(404);
+    expect(parseListQuery(new URLSearchParams('prefix=masters/'), ['masters/']).kind).toBe('error');
+    expect((await h.get('/media/workshop/bench.jpg')).status).toBe(200);
   });
 });
 

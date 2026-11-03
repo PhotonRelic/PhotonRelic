@@ -46,3 +46,12 @@ fi
 if [ -f "$LIB" ] && [ -n "${CACHE_PURGE_TOKEN:-}" ]; then
   printf '%s' "$CACHE_PURGE_TOKEN" | wr library secret put CACHE_PURGE_TOKEN -c "$LIB"
 fi
+# The R2 token that signs master uploads (Object Read & Write on the one bucket),
+# when .env has it: both halves as library secrets, every deploy. One half
+# alone is a mistake, and the Worker refuses to start on it, so stop here.
+if [ -f "$LIB" ] && { [ -n "${R2_ACCESS_KEY_ID:-}" ] || [ -n "${R2_SECRET_ACCESS_KEY:-}" ]; }; then
+  : "${R2_ACCESS_KEY_ID:?set R2_ACCESS_KEY_ID with R2_SECRET_ACCESS_KEY}"
+  : "${R2_SECRET_ACCESS_KEY:?set R2_SECRET_ACCESS_KEY with R2_ACCESS_KEY_ID}"
+  printf '%s' "$R2_ACCESS_KEY_ID" | wr library secret put R2_ACCESS_KEY_ID -c "$LIB"
+  printf '%s' "$R2_SECRET_ACCESS_KEY" | wr library secret put R2_SECRET_ACCESS_KEY -c "$LIB"
+fi

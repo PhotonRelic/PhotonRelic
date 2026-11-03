@@ -36,6 +36,79 @@ export const MAX_TRANSFORM_SOURCE_BYTES = 20 * 1024 * 1024;
 export const UPLOAD_MAX_BYTES = 19_950_000;
 export const UPLOAD_MAX_LABEL = '19.95 MB';
 
+// ---------------------------------------------------------------------------
+// Masters: the originals a web copy was made from, kept beside it in the
+// bucket under a prefix the resizer refuses by construction
+// ---------------------------------------------------------------------------
+
+/** Where masters live. Fixed, not configured: the resizer refuses it before reading any config. */
+export const MASTERS_PREFIX = 'masters/';
+/** The formats a master may have: professional and camera formats, never a web image. */
+export const MASTER_FORMATS = [
+  'ai',
+  'eps',
+  'pdf',
+  'psd',
+  'psb',
+  'tif',
+  'tiff',
+  'svg',
+  'indd',
+  'dng',
+  'cr2',
+  'cr3',
+  'nef',
+  'arw',
+  'raf',
+  'orf',
+  'rw2',
+  'heic',
+  'heif',
+] as const;
+/** A part of a multipart master upload, and the largest single-request upload: 100 MiB. */
+export const MASTER_PART_BYTES = 100 * 1024 * 1024;
+/** The largest master the library takes: 5 GiB, fifty parts. */
+export const MASTER_MAX_BYTES = 5 * 1024 * 1024 * 1024;
+/** A master's key: masters/<subject path>/<web copy's stem>.<master's extension>. */
+export const MASTER_KEY =
+  /^masters\/[a-z0-9][a-z0-9-]*(?:\/[a-z0-9][a-z0-9-]*)*\/[a-z0-9][a-z0-9-]*\.[a-z0-9]+$/;
+
+/** The lowercase extension of a file name, '' without one. */
+export const extensionOf = (name: string): string => {
+  const m = /\.([A-Za-z0-9]+)$/.exec(name);
+  return m ? (m[1] ?? '').toLowerCase() : '';
+};
+
+export const isMasterFormat = (name: string): boolean =>
+  (MASTER_FORMATS as readonly string[]).includes(extensionOf(name));
+
+/**
+ * The master's key for a web copy: the web key's path under `masters/`, with
+ * the master's own extension. `media/psi/party.jpg` + `Party Final.PSD` is
+ * `masters/psi/party.psd`. Null when the web key is not under the upload
+ * prefix or the master's format is not one the library takes.
+ */
+export function masterKeyFor(
+  uploadPrefix: string,
+  webKey: string,
+  masterName: string,
+): string | null {
+  if (!webKey.startsWith(uploadPrefix)) return null;
+  const ext = extensionOf(masterName);
+  if (!(MASTER_FORMATS as readonly string[]).includes(ext)) return null;
+  const rest = webKey.slice(uploadPrefix.length);
+  const dot = rest.lastIndexOf('.');
+  if (dot <= 0) return null;
+  const key = `${MASTERS_PREFIX}${rest.slice(0, dot)}.${ext}`;
+  return MASTER_KEY.test(key) ? key : null;
+}
+
+/** The stem a master is matched on: the path without its extension, lowercased. */
+export const masterStem = (path: string): string => {
+  const dot = path.lastIndexOf('.');
+  return (dot > 0 ? path.slice(0, dot) : path).toLowerCase();
+};
+
 /** Cloudflare Images transformation limit on either edge of the output. */
 const MAX_EDGE = 12_000;
 

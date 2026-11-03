@@ -75,6 +75,17 @@ export function joinCamera(make: string | null | undefined, model: string | null
 export function readCapture(bytes: ArrayBuffer | Uint8Array): CaptureEntry;
 export function webpHasExif(bytes: ArrayBuffer | Uint8Array): boolean;
 export function extensionOf(name: string): string;
+export const MASTER_EXT: RegExp;
+export function pairMasters(entries: DroppedEntry[], formats?: RegExp): Map<string, string>;
+export function partRanges(
+  size: number,
+  partBytes: number,
+): { partNumber: number; start: number; end: number }[];
+export function uploadMaster(
+  key: string,
+  file: { name: string; size: number; slice: (a: number, b: number) => unknown },
+  opts?: { replace?: boolean; onState?: (text: string) => void },
+): Promise<{ ok: true; masterKey: string; bytes: number }>;
 export function replaceProblem(
   file: { name: string; size: number },
   key: string,

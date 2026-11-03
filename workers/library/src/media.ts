@@ -48,6 +48,17 @@ export interface MediaBucket {
   } | null>;
   /** Removes the object for good; a key that does not exist is not an error. */
   delete(key: string): Promise<void>;
+  /**
+   * A multipart upload the browser fills by presigned part URLs (masters):
+   * started and completed here, so both are the library's own acts.
+   */
+  createMultipart(key: string, contentType: string): Promise<{ uploadId: string }>;
+  completeMultipart(
+    key: string,
+    uploadId: string,
+    parts: { partNumber: number; etag: string }[],
+  ): Promise<void>;
+  abortMultipart(key: string, uploadId: string): Promise<void>;
   /** One page of keys under a prefix; with a delimiter, folders come back as prefixes. */
   list(
     prefix: string,
@@ -194,6 +205,23 @@ export class R2MediaBucket implements MediaBucket {
         }
       : null;
   }
+  async createMultipart(key: string, contentType: string) {
+    const u = await this.bucket.createMultipartUpload(key, {
+      httpMetadata: { contentType },
+      customMetadata: { source: UPLOAD_SOURCE_TAG },
+    });
+    return { uploadId: u.uploadId };
+  }
+  async completeMultipart(
+    key: string,
+    uploadId: string,
+    parts: { partNumber: number; etag: string }[],
+  ) {
+    await this.bucket.resumeMultipartUpload(key, uploadId).complete(parts);
+  }
+  async abortMultipart(key: string, uploadId: string) {
+    await this.bucket.resumeMultipartUpload(key, uploadId).abort();
+  }
   async head(key: string) {
     const o = await this.bucket.head(key);
     return o
@@ -288,6 +316,50 @@ export class MemoryMediaBucket implements MediaBucket {
   }
   async delete(key: string): Promise<void> {
     this.objects.delete(key);
+  }
+  /** Multipart uploads in flight: parts arrive through `putPart`, as a presigned PUT would land them. */
+  readonly multipart = new Map<
+    string,
+    { key: string; contentType: string; parts: Map<number, { bytes: ArrayBuffer; etag: string }> }
+  >();
+  async createMultipart(key: string, contentType: string) {
+    const uploadId = `mp-${this.multipart.size + 1}-${key.replace(/[^a-z0-9]/g, '')}`;
+    this.multipart.set(uploadId, { key, contentType, parts: new Map() });
+    return { uploadId };
+  }
+  async putPart(uploadId: string, partNumber: number, bytes: ArrayBuffer): Promise<string> {
+    const u = this.multipart.get(uploadId);
+    if (!u) throw new Error('no such upload');
+    const etag = await memoryEtag(bytes);
+    u.parts.set(partNumber, { bytes, etag });
+    return etag;
+  }
+  async completeMultipart(
+    key: string,
+    uploadId: string,
+    parts: { partNumber: number; etag: string }[],
+  ) {
+    const u = this.multipart.get(uploadId);
+    if (!u || u.key !== key) throw new Error('no such upload');
+    const chunks: Uint8Array[] = [];
+    for (const p of [...parts].sort((a, b) => a.partNumber - b.partNumber)) {
+      const had = u.parts.get(p.partNumber);
+      if (!had || had.etag !== p.etag) throw new Error(`part ${p.partNumber} does not match`);
+      chunks.push(new Uint8Array(had.bytes));
+    }
+    const all = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0));
+    let at = 0;
+    for (const c of chunks) {
+      all.set(c, at);
+      at += c.byteLength;
+    }
+    this.multipart.delete(uploadId);
+    await this.put(key, all.buffer as ArrayBuffer, u.contentType, {
+      customMetadata: { source: UPLOAD_SOURCE_TAG },
+    });
+  }
+  async abortMultipart(_key: string, uploadId: string) {
+    this.multipart.delete(uploadId);
   }
   async list(
     prefix: string,

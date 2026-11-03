@@ -54,6 +54,11 @@ USAGE_DATASET = "photonrelic_usage"
 # CACHE_PURGE_TOKEN secret (see .env.example): an API token with
 # Zone → Cache Purge → Purge on that zone. Unset, cached copies expire in a day.
 # CF_ZONE_ID = "<zone id, from the zone's Overview page>"
+# Masters (the .ai, .psd and raw originals kept under masters/): the bucket's
+# name, filled in by provision.sh, which also sets the bucket's CORS rule for
+# this library's origin. The two R2 token halves are secrets deploy.sh sets
+# from R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY in .env (see .env.example).
+MEDIA_BUCKET = "photonrelic-example-media"
 
 [[d1_databases]]
 binding = "DB"

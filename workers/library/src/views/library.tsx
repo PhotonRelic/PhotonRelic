@@ -22,6 +22,7 @@ import {
   SEARCH_STATES,
 } from '../library.js';
 import type { MarkupPanelModel } from '../markup.js';
+import { MASTER_FORMATS, MASTER_MAX_BYTES } from '../masters.js';
 import {
   basenameOf,
   type MediaLayout,
@@ -923,6 +924,7 @@ export function FilePage({
   usage,
   markup,
   purge,
+  masters,
 }: {
   objectKey: string;
   head: { size: number; contentType: string; etag: string | null } | null;
@@ -936,6 +938,8 @@ export function FilePage({
   markup: MarkupPanelModel | null;
   /** Whether the edge is purged after a Replace or Delete, or left to expire. */
   purge: boolean;
+  /** Whether master uploads are configured, and the master object on file, if any. */
+  masters: { configured: boolean; head: { size: number } | null };
 }) {
   const filing = filingLabel(asset ?? undefined);
   const focal = focalOf(asset);
@@ -1249,6 +1253,92 @@ export function FilePage({
             </details>
           )}
           {!hasStore || !head ? null : (
+            <details
+              class="master-file"
+              id="pr-master"
+              data-key={key}
+              data-formats={MASTER_FORMATS.join(',')}
+              data-max-bytes={String(MASTER_MAX_BYTES)}
+              data-has-master={asset?.master_key ? '1' : '0'}
+            >
+              <summary>Master in the bucket…</summary>
+              {asset?.master_key ? (
+                <p>
+                  On file:{' '}
+                  <a href={`/library/master?key=${encodeURIComponent(key)}`} download>
+                    {asset.master_name ?? asset.master_key}
+                  </a>
+                  {masters.head ? <small class="muted"> ({kb(masters.head.size)})</small> : null}{' '}
+                  <code class="path">{asset.master_key}</code>
+                  {masters.head ? null : (
+                    <>
+                      {' '}
+                      <mark class="chip chip-retired">object missing</mark>
+                    </>
+                  )}
+                </p>
+              ) : (
+                <p>
+                  <small class="muted">
+                    No master in the bucket.{' '}
+                    {asset?.master_url ? 'The master link above points elsewhere.' : ''}
+                  </small>
+                </p>
+              )}
+              {masters.configured ? (
+                <>
+                  <p>
+                    The original this web copy was made from, kept under{' '}
+                    <code class="path">masters/</code>, which the resizer never serves. One of{' '}
+                    {MASTER_FORMATS.map((f) => `.${f}`).join(', ')}, up to{' '}
+                    {MASTER_MAX_BYTES / 1024 ** 3} GiB; it goes straight from your browser into the
+                    bucket, in parts above 100 MB.
+                  </p>
+                  <p>
+                    <label class="file-link">
+                      choose the master
+                      <input
+                        type="file"
+                        id="pr-master-file"
+                        accept={MASTER_FORMATS.map((f) => `.${f}`).join(',')}
+                        hidden
+                      />
+                    </label>
+                  </p>
+                  {asset?.master_key ? (
+                    <label>
+                      <input type="checkbox" id="pr-master-replace" value="1" /> Replace the master
+                      on file
+                    </label>
+                  ) : null}
+                  <p id="pr-master-state" class="upload-summary" hidden />
+                  <button type="button" id="pr-master-start" class="contrast" disabled>
+                    Upload master
+                  </button>
+                </>
+              ) : (
+                <p>
+                  <small class="muted">
+                    Master uploads are not configured: the library needs the R2 token (README,
+                    Masters). The master link above still works.
+                  </small>
+                </p>
+              )}
+              {asset?.master_key ? (
+                <form method="post" action="/library/file/master/delete" class="retire-form">
+                  <input type="hidden" name="key" value={key} />
+                  <label>
+                    <input type="checkbox" name="confirm" value="delete" required /> Yes, remove the
+                    master from the bucket
+                  </label>
+                  <button type="submit" class="outline">
+                    Remove master
+                  </button>
+                </form>
+              ) : null}
+            </details>
+          )}
+          {!hasStore || !head ? null : (
             <details class="delete-file">
               <summary>Delete from the bucket…</summary>
               <form method="post" action="/library/file/delete">
@@ -1263,6 +1353,12 @@ export function FilePage({
                   <input type="checkbox" name="confirm" value="delete" required /> Yes, delete this
                   file
                 </label>
+                {asset?.master_key ? (
+                  <label>
+                    <input type="checkbox" name="also_master" value="1" /> Also delete its master,{' '}
+                    <code class="path">{asset.master_key}</code>
+                  </label>
+                ) : null}
                 <button type="submit" class="contrast">
                   Delete for good
                 </button>
@@ -1379,12 +1475,15 @@ export function UploadPage({
   subject,
   layout,
   hasStore,
+  mastersConfigured,
 }: {
   /** Existing subject folders, for the datalist. */
   subjects: string[];
   subject: string;
   layout: MediaLayout;
   hasStore: boolean;
+  /** Whether a master dropped beside its web copy can go into the bucket too. */
+  mastersConfigured: boolean;
 }) {
   return (
     <>
@@ -1417,6 +1516,8 @@ export function UploadPage({
         data-readonly={hasStore ? '0' : '1'}
         data-max-bytes={String(UPLOAD_MAX_BYTES)}
         data-upload-prefix={layout.uploadPrefix}
+        data-masters={mastersConfigured ? '1' : '0'}
+        data-master-formats={MASTER_FORMATS.join(',')}
       >
         <div class="filter-bar">
           <label>

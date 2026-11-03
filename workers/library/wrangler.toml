@@ -61,6 +61,15 @@ LIBRARY_PREFIXES = "media/"
 # (`wrangler secret put CACHE_PURGE_TOKEN`) with Zone → Cache Purge → Purge.
 # Unset, cached copies expire on their own within a day.
 # CF_ZONE_ID = ""
+# Optional: masters, the originals kept beside the web copies under masters/,
+# put straight into the bucket from the browser on signed URLs. Needs the
+# bucket's name (the MEDIA binding's), CF_ACCOUNT_ID, and two secrets from an
+# R2 API token with Object Read & Write on this one bucket:
+#   wrangler secret put R2_ACCESS_KEY_ID
+#   wrangler secret put R2_SECRET_ACCESS_KEY
+# and a CORS rule on the bucket naming the library's origin (scripts/provision.sh
+# sets it). Without the secrets the file page says masters are not configured.
+# MEDIA_BUCKET = "photonrelic-media"
 
 [[d1_databases]]
 binding = "DB"

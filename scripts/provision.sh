@@ -5,7 +5,8 @@
 #   - the Zero Trust organization, if the account has none, with One-time PIN
 #   - the Access application for the library's hostname, allowing the email
 #     domains in ACCESS_ALLOWED_EMAIL_DOMAINS
-#   - the R2 bucket and the D1 database
+#   - the R2 bucket and the D1 database, and the bucket's CORS rule that lets
+#     the library's pages put masters straight into it
 # Safe to re-run: each step reuses what already exists and updates the policy.
 #
 #   sh scripts/provision.sh deploy/<name>
@@ -84,6 +85,15 @@ if [ -n "$BUCKET" ]; then
   else
     ok "$res"
   fi
+  # Master uploads go from the library's pages straight to the bucket on signed
+  # URLs, which the browser only allows with a CORS rule naming the library's
+  # origin; the ETag must be exposed for multipart parts. Set every time.
+  if [ -f "$LIB" ]; then
+    echo "== CORS on $BUCKET for https://$HOST"
+    res=$(cf PUT "$A/r2/buckets/$BUCKET/cors" "{\"rules\":[{\"allowed\":{\"origins\":[\"https://$HOST\"],\"methods\":[\"PUT\"],\"headers\":[\"content-type\"]},\"exposeHeaders\":[\"ETag\"],\"maxAgeSeconds\":3600}]}")
+    ok "$res"
+    echo "   set"
+  fi
 fi
 
 # The database is the library's; the resizer may bind the same one for its
@@ -113,8 +123,9 @@ if [ -f "$LIB" ]; then
   sed -e "s|^ACCESS_TEAM_DOMAIN = \".*\"|ACCESS_TEAM_DOMAIN = \"$TEAM_DOMAIN\"|" \
       -e "s|^ACCESS_AUD = \".*\"|ACCESS_AUD = \"$AUD\"|" \
       -e "s|^CF_ACCOUNT_ID = \".*\"|CF_ACCOUNT_ID = \"$CLOUDFLARE_ACCOUNT_ID\"|" \
+      -e "s|^MEDIA_BUCKET = \".*\"|MEDIA_BUCKET = \"$BUCKET\"|" \
       -e "s|^database_id = \".*\"|database_id = \"$DB_ID\"|" "$LIB" > "$tmp" && mv "$tmp" "$LIB"
-  grep -E '^(ACCESS_TEAM_DOMAIN|ACCESS_AUD|CF_ACCOUNT_ID|database_id) ' "$LIB"
+  grep -E '^(ACCESS_TEAM_DOMAIN|ACCESS_AUD|CF_ACCOUNT_ID|MEDIA_BUCKET|database_id) ' "$LIB"
 fi
 
 if [ -f "$RES" ] && [ -n "$(toml database_name "$RES")" ]; then

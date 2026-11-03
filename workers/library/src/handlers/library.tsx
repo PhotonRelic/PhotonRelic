@@ -51,6 +51,7 @@ import {
   TOO_BIG,
 } from '../library.js';
 import { markupPanel } from '../markup.js';
+import { completeMaster, linkMasters, removeMaster, startMaster } from '../masters.js';
 import {
   contentTypeFor,
   isLibraryKey,
@@ -87,6 +88,7 @@ const UNUSED_PAGE = 100;
 
 const SAFE_BACK = /^\/library(?:[/?#][^\s]*)?$/;
 const NO_STORE = 'No media bucket is bound to this Worker.';
+const MASTERS_OFF = 'Masters are not configured: the library needs the R2 token (README, Masters).';
 /** Tiles to a page of search results. */
 const SEARCH_PAGE = 60;
 /** Longer than any query a person types; keeps a pasted blob out of the index's parser. */
@@ -314,6 +316,8 @@ export function libraryRoutes(deps: AppDeps) {
       usageOf(key),
     ]);
     const markup = head ? markupPanel(deps, key, asset) : null;
+    const masterHead =
+      asset?.master_key && deps.media ? await deps.media.head(asset.master_key) : null;
     return page(
       c,
       deps,
@@ -329,6 +333,7 @@ export function libraryRoutes(deps: AppDeps) {
         usage={usage}
         markup={markup}
         purge={deps.purge !== null}
+        masters={{ configured: deps.masters !== null, head: masterHead }}
       />,
       { modules: [...(markup ? ['/static/pr-markup.js'] : []), '/static/pr-upload.js'] },
     );
@@ -556,23 +561,185 @@ export function libraryRoutes(deps: AppDeps) {
         'Not deleted: the confirmation was not ticked.',
       );
     const head = await deps.media.head(key);
+    const asset = await getAsset(deps.db, key);
     if (!head) {
       await forgetAsset(deps.db, key);
       return redirectWith(c, folderOf(key), 'success', `${key} was already gone; forgotten.`);
     }
+    // The master goes too only when the box says so: it is a separate object, and
+    // the web copy may be the one that was wrong.
+    const master = str(f, 'also_master') === '1' && asset?.master_key ? asset.master_key : null;
+    if (master) await deps.media.delete(master);
     await deps.media.delete(key);
     await forgetAsset(deps.db, key);
     await logAction(deps.db, {
       actor: actor(c),
       action: 'library.deleted',
-      detail: { key, size: head.size, etag: head.etag },
+      detail: { key, size: head.size, etag: head.etag, ...(master ? { master } : {}) },
     });
     const purge = await purgeKeys(actor(c), [key]);
     return redirectWith(
       c,
       folderOf(key),
       purge.configured && purge.error !== null ? 'warning' : 'success',
-      `Deleted ${key} from the bucket. ${purgeNote(purge)}`,
+      `Deleted ${key}${master ? ' and its master' : ''} from the bucket. ${purgeNote(purge)}`,
+    );
+  });
+
+  // Masters: the original a web copy was made from, put straight into R2 by the
+  // browser on a signed URL, started and completed here. Downloads come back
+  // through this Worker as attachments; nothing under masters/ is ever served
+  // by the resizer.
+  app.post('/file/master/start', async (c) => {
+    if (!deps.media) return c.json({ ok: false, error: NO_STORE }, 503);
+    if (!deps.masters) return c.json({ ok: false, error: MASTERS_OFF }, 503);
+    const body = (await c.req.json().catch(() => null)) as {
+      key?: unknown;
+      name?: unknown;
+      size?: unknown;
+      replace?: unknown;
+    } | null;
+    if (
+      !body ||
+      typeof body.key !== 'string' ||
+      typeof body.name !== 'string' ||
+      typeof body.size !== 'number'
+    )
+      return c.json({ ok: false, error: 'Send key, name and size.' }, 400);
+    if (!isLibraryKey(layout, body.key)) return c.json({ ok: false, error: 'No such key.' }, 404);
+    const r = await startMaster(deps.db, deps.media, deps.masters, layout, {
+      key: body.key,
+      name: body.name,
+      size: body.size,
+      replace: body.replace === true,
+    });
+    if (!r.ok) return c.json({ ok: false, error: r.error }, r.status);
+    await logAction(deps.db, {
+      actor: actor(c),
+      action: 'library.master_started',
+      detail: { key: body.key, master: r.plan.masterKey, bytes: body.size, mode: r.plan.mode },
+    });
+    return c.json({ ok: true, ...r.plan });
+  });
+
+  app.post('/file/master/complete', async (c) => {
+    if (!deps.media) return c.json({ ok: false, error: NO_STORE }, 503);
+    if (!deps.masters) return c.json({ ok: false, error: MASTERS_OFF }, 503);
+    const body = (await c.req.json().catch(() => null)) as {
+      key?: unknown;
+      name?: unknown;
+      size?: unknown;
+      uploadId?: unknown;
+      parts?: unknown;
+    } | null;
+    if (
+      !body ||
+      typeof body.key !== 'string' ||
+      typeof body.name !== 'string' ||
+      typeof body.size !== 'number'
+    )
+      return c.json({ ok: false, error: 'Send key, name and size.' }, 400);
+    if (!isLibraryKey(layout, body.key)) return c.json({ ok: false, error: 'No such key.' }, 404);
+    const parts = Array.isArray(body.parts)
+      ? (body.parts as unknown[])
+          .map((p) => p as { partNumber?: unknown; etag?: unknown })
+          .filter(
+            (p): p is { partNumber: number; etag: string } =>
+              typeof p.partNumber === 'number' && typeof p.etag === 'string',
+          )
+      : undefined;
+    const r = await completeMaster(deps.db, deps.media, layout, {
+      key: body.key,
+      name: body.name,
+      size: body.size,
+      uploadId: typeof body.uploadId === 'string' ? body.uploadId : undefined,
+      parts,
+    });
+    if (!r.ok) return c.json({ ok: false, error: r.error }, r.status);
+    await logAction(deps.db, {
+      actor: actor(c),
+      action: 'library.master_uploaded',
+      detail: {
+        key: body.key,
+        master: r.masterKey,
+        bytes: r.bytes,
+        name: body.name,
+        ...(r.replaced ? { replaced: r.replaced } : {}),
+      },
+    });
+    setFlash(c, 'success', `Master ${body.name} is in the bucket beside ${body.key}.`);
+    return c.json({ ok: true, masterKey: r.masterKey, bytes: r.bytes });
+  });
+
+  app.post('/file/master/abort', async (c) => {
+    if (!deps.media) return c.json({ ok: false, error: NO_STORE }, 503);
+    const body = (await c.req.json().catch(() => null)) as {
+      masterKey?: unknown;
+      uploadId?: unknown;
+    } | null;
+    if (!body || typeof body.masterKey !== 'string' || typeof body.uploadId !== 'string')
+      return c.json({ ok: false, error: 'Send masterKey and uploadId.' }, 400);
+    if (!body.masterKey.startsWith('masters/'))
+      return c.json({ ok: false, error: 'Not a master key.' }, 400);
+    await deps.media.abortMultipart(body.masterKey, body.uploadId).catch(() => undefined);
+    return c.json({ ok: true });
+  });
+
+  /** The master itself, as an attachment: never inline, never from the public host. */
+  app.get('/master', async (c) => {
+    const key = c.req.query('key') ?? '';
+    if (!deps.media || !isLibraryKey(layout, key)) return c.notFound();
+    const asset = await getAsset(deps.db, key);
+    if (!asset?.master_key) return c.notFound();
+    const o = await deps.media.get(asset.master_key);
+    if (!o) return c.notFound();
+    const name = (
+      asset.master_name ?? asset.master_key.slice(asset.master_key.lastIndexOf('/') + 1)
+    )
+      .replace(/[^\x20-\x7e]/g, '_')
+      .replace(/["\\]/g, '_');
+    await logAction(deps.db, {
+      actor: actor(c),
+      action: 'library.master_downloaded',
+      detail: { key, master: asset.master_key, bytes: o.size },
+    });
+    return new Response(o.body, {
+      headers: {
+        'content-type': 'application/octet-stream',
+        'content-length': String(o.size),
+        'content-disposition': `attachment; filename="${name}"`,
+        'x-content-type-options': 'nosniff',
+        'content-security-policy': 'sandbox',
+        'cache-control': 'private, no-store',
+      },
+    });
+  });
+
+  app.post('/file/master/delete', async (c) => {
+    const f = await c.req.parseBody();
+    const key = str(f, 'key');
+    if (!isLibraryKey(layout, key)) return redirectWith(c, '/library', 'error', 'No such key.');
+    if (!deps.media) return redirectWith(c, fileBack(key), 'error', NO_STORE);
+    if (str(f, 'confirm') !== 'delete')
+      return redirectWith(
+        c,
+        fileBack(key),
+        'error',
+        'Not removed: the confirmation was not ticked.',
+      );
+    const removed = await removeMaster(deps.db, deps.media, key);
+    if (!removed)
+      return redirectWith(c, fileBack(key), 'warning', 'There was no master to remove.');
+    await logAction(deps.db, {
+      actor: actor(c),
+      action: 'library.master_deleted',
+      detail: { key, master: removed },
+    });
+    return redirectWith(
+      c,
+      fileBack(key),
+      'success',
+      `Removed the master ${removed} from the bucket.`,
     );
   });
 
@@ -759,10 +926,11 @@ export function libraryRoutes(deps: AppDeps) {
   app.post('/rescan', async (c) => {
     if (!deps.media) return redirectWith(c, '/library', 'error', NO_STORE);
     const r = await rescan(deps.db, deps.media, layout, deps.now());
+    const m = await linkMasters(deps.db, deps.media, layout);
     await logAction(deps.db, {
       actor: actor(c),
       action: 'library.rescan',
-      detail: { ...r, changed: r.changed.length },
+      detail: { ...r, changed: r.changed.length, masters: m },
     });
     // Bytes replaced outside the library (rclone, the dashboard) are still the
     // old bytes at the edge until purged, exactly as after a Replace here. A
@@ -788,6 +956,10 @@ export function libraryRoutes(deps: AppDeps) {
       '/library',
       'success',
       `Rescan: ${r.listed} objects listed, ${r.added} new to the library${
+        m.masters
+          ? `, ${m.masters} master${m.masters === 1 ? '' : 's'}${m.linked ? ` (${m.linked} linked)` : ''}${m.orphans ? ` (${m.orphans} without a web copy)` : ''}`
+          : ''
+      }${m.unlinked ? `, ${m.unlinked} master link${m.unlinked === 1 ? '' : 's'} dropped (object gone)` : ''}${
         r.completed ? `, ${r.completed} upload record${r.completed === 1 ? '' : 's'} completed` : ''
       }${r.changed.length ? `, ${r.changed.length} changed (bytes replaced outside)` : ''}${
         r.forgotten ? `, ${r.forgotten} forgotten (object gone)` : ''
@@ -819,6 +991,7 @@ export function libraryRoutes(deps: AppDeps) {
         subject={cleanSubject(c.req.query('subject') ?? '')}
         layout={layout}
         hasStore={Boolean(deps.media)}
+        mastersConfigured={deps.masters !== null}
       />,
       { modules: ['/static/pr-upload.js'] },
     ),
