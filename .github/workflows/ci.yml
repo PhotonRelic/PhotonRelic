@@ -1,5 +1,6 @@
 # Lint, typecheck and test every pull request and every push to master, and
-# check that no private name slipped into the tree or the commit messages.
+# check that no private name slipped into the tree, the commit messages, or
+# the pull request's title and description (which become the squash commit).
 # Nothing here deploys: deployment needs account secrets and prints account
 # details in its logs, which are public on this repo, so it lives elsewhere.
 name: CI
@@ -8,6 +9,8 @@ on:
   push:
     branches: [master]
   pull_request:
+    # "edited" re-runs the scan when the title or description changes.
+    types: [opened, synchronize, reopened, edited]
 
 permissions:
   contents: read
@@ -45,12 +48,17 @@ jobs:
         with:
           fetch-depth: 0
       # The patterns are a repository secret, so they never appear in this
-      # public file or in the logs; only the names of offending files are
-      # printed. Pull requests from forks have no secrets and skip the scan.
-      - name: Scan the tree and the commit messages
+      # public file or in the logs. Only the names of offending files and the
+      # hashes of offending commits are printed, never the matching text.
+      # Pull requests from forks have no secrets and skip the scan.
+      - name: Scan the tree, the commit messages and the pull request text
         env:
           FORBIDDEN_PATTERNS: ${{ secrets.FORBIDDEN_PATTERNS }}
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          # Title and body reach the shell through the environment, never by
+          # interpolation into the script, so their content cannot run.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           if [ -z "$FORBIDDEN_PATTERNS" ]; then
             echo "No pattern secret available (fork pull request); scan skipped."
@@ -70,10 +78,19 @@ jobs:
           else
             range="HEAD"
           fi
-          bad=$(git log --format='%H %B' "$range" | grep -iE -e "$FORBIDDEN_PATTERNS" | cut -c1-40 || true)
+          bad=""
+          for sha in $(git rev-list "$range"); do
+            if git log -1 --format='%B' "$sha" | grep -qiE -e "$FORBIDDEN_PATTERNS"; then
+              bad="$bad$sha"$'\n'
+            fi
+          done
           if [ -n "$bad" ]; then
             echo "::error::Private names in the messages of these commits:"
-            printf '%s\n' "$bad"
+            printf '%s' "$bad"
+            status=1
+          fi
+          if [ -n "$PR_TITLE$PR_BODY" ] && printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" | grep -qiE -e "$FORBIDDEN_PATTERNS"; then
+            echo "::error::Private names in the pull request title or description. Edit them before merging; a squash merge turns them into the commit message."
             status=1
           fi
           [ "$status" -eq 0 ] && echo "Clean."
