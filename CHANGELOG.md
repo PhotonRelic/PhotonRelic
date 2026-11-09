@@ -6,10 +6,30 @@ Within a version, **Operators must do** comes first whenever there is something 
 
 ## [Unreleased]
 
+### Operators must do
+
+- Migration 0009 runs on deploy: two small tables, for master uploads in flight and for the library's own locks. Nothing to configure.
+- Local development now needs `DEV_IDENTITY` in `workers/library/.dev.vars` (copy `.dev.vars.example`); the library no longer runs without Access on the strength of `ENVIRONMENT = "local"` alone.
+
 ### Added
 
 - `scripts/mint-tokens.sh`: creates the deployment's API tokens from one bootstrap token (Account API Tokens Edit, nothing else), each named `photonrelic-<env>-<purpose>` and scoped to one job: the deploy token, and optionally the usage token, the cache purge token (with `CF_ZONE_ID` set) and the R2 key pair for masters on the one bucket. Written to `.env`, never printed. `--retire-bootstrap` deletes the bootstrap token afterwards; without it, both scripts end by saying the bootstrap token is still valid and how to delete it.
 - `install.sh` uses it when `CLOUDFLARE_BOOTSTRAP_TOKEN` is in the environment: `--usage`, `--purge`, `--masters` and `--retire-bootstrap` make a whole installation, tokens included, one command. `AGENTS.md` and `docs/deploy.md` describe the path and what the bootstrap token is.
+
+### Fixed
+
+- Completing a master upload acts only on an upload this library started: a completion whose declared size does not match removes the half-upload it created, writes an audit row (`library.master_removed`), and never touches a master already on file. Aborting a multipart upload needs the upload's own id and is audited (`library.master_aborted`). A plain master upload no longer writes over an unlinked object already at the master's key; Replace does.
+- The upload path verifies the bytes before storing them, as Replace already did: the declared SHA-256 must match, and the file must be the format its name says (a PNG under a `.jpg` key, or a file that is not a web image, is refused with 415). Two uploads racing for one new key cannot both win; the bucket write is conditional on the key being free.
+- A retry that finds its object already stored completes the record without rewriting what the first upload recorded: dimensions, uploader and capture data are kept, and only empty fields are filled.
+- The library's security headers are on every response, including the 401, the 404 page and the error page; an error before sign-in says nothing about its cause. `Permissions-Policy` and `Cross-Origin-Opener-Policy` are set.
+- Master links keep to an allowlist of schemes (web, cloud stores, network shares); a `javascript:` or `data:` link is refused when saved.
+- The raw preview serves the content type the key's extension implies, inline and sandboxed, whatever type the object was stored with.
+- A Rescan takes a lock, so two cannot walk the bucket and rebuild the search index at once; a lock older than fifteen minutes is taken over. A search page number is bounded.
+
+### Security
+
+- The library's no-Access mode exists only for local development: it requires `DEV_IDENTITY` (from `.dev.vars`, which is never deployed) and answers on localhost only. A deployed configuration without `ACCESS_AUD` has no door at all, whatever `ENVIRONMENT` says.
+- A malformed Access token is refused rather than reported: the signature is decoded inside the same guard as the header and claims.
 
 ## [1.0.0] - 2026-11-09
 

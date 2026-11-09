@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { recentActions } from '../src/audit.js';
 import { getAsset, type SearchFilters, searchAssets } from '../src/library.js';
 import { linkMasters, mastersFromVars, partsFor, R2MasterSigner } from '../src/masters.js';
-import { bytes, FakeSigner, harness, STAFF } from './helpers.js';
+import { bytes, FakeSigner, harness, png, STAFF, text } from './helpers.js';
 
 const KEY = 'media/psi/party.jpg';
 const ALL: SearchFilters = { q: '', subject: null, tag: null, camera: null, state: 'all' };
@@ -49,6 +49,18 @@ const post = (h: H, path: string, body: unknown) =>
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
+
+/** A web copy with a master uploaded and completed beside it; returns the master's key. */
+async function withMaster(h: H, name = 'party.psd', content = 'master bytes') {
+  await h.put(KEY, bytes('web'));
+  const master = text(content);
+  const plan = (await json(
+    await post(h, '/library/file/master/start', { key: KEY, name, size: master.byteLength }),
+  )) as { mode: string; masterKey: string; url: string };
+  await playBrowser(h, plan, master);
+  await post(h, '/library/file/master/complete', { key: KEY, name, size: master.byteLength });
+  return plan.masterKey;
+}
 
 describe('master keys', () => {
   it('mirror the web key under masters/ with the master’s own extension', () => {
@@ -313,25 +325,101 @@ describe('uploading a master from the file page', () => {
     expect((await json(done)).error).toMatch(/removed/);
     expect(h.media.objects.has('masters/psi/party.psd')).toBe(false);
     expect((await getAsset(h.db, KEY))?.master_key).toBeNull();
+    // Taking the half-upload out again is an act, and is in the log.
+    expect((await recentActions(h.db, 1))[0]?.action).toBe('library.master_removed');
+    // With the upload over, there is nothing left to complete.
+    const again = await post(h, '/library/file/master/complete', {
+      key: KEY,
+      name: 'x.psd',
+      size: 100,
+    });
+    expect(again.status).toBe(409);
+    expect((await json(again)).error).toMatch(/No upload/);
+  });
+
+  it('never removes a master on file through a completion it did not start', async () => {
+    const h = harness({ masters: new FakeSigner() });
+    const masterKey = await withMaster(h, 'party.psd', 'the real master');
+    expect(h.media.objects.has(masterKey)).toBe(true);
+    // A stray completion naming the same master with a wrong size: before, this
+    // deleted the master on file; now there is no upload to complete.
+    const stray = await post(h, '/library/file/master/complete', {
+      key: KEY,
+      name: 'party.psd',
+      size: 1,
+    });
+    expect(stray.status).toBe(409);
+    expect((await json(stray)).error).toMatch(/No upload/);
+    expect(h.media.objects.has(masterKey)).toBe(true);
+    expect((await getAsset(h.db, KEY))?.master_key).toBe(masterKey);
+    // An abort needs the upload it names, and is logged when it happens.
+    const nobody = await post(h, '/library/file/master/abort', {
+      masterKey,
+      uploadId: 'not-an-upload',
+    });
+    expect(nobody.status).toBe(404);
+    const big = (await json(
+      await post(h, '/library/file/master/start', {
+        key: KEY,
+        name: 'party.psd',
+        size: MASTER_PART_BYTES + 1,
+        replace: true,
+      }),
+    )) as { uploadId: string; masterKey: string };
+    const aborted = await post(h, '/library/file/master/abort', {
+      masterKey: big.masterKey,
+      uploadId: big.uploadId,
+    });
+    expect(aborted.status).toBe(200);
+    expect((await recentActions(h.db, 1))[0]?.action).toBe('library.master_aborted');
+    expect(h.media.multipart.has(big.uploadId)).toBe(false);
+    // The master on file was never touched by any of this.
+    expect(h.media.objects.has(masterKey)).toBe(true);
+  });
+
+  it('refuses a plain upload over an unlinked object at the master key, and a name that is not one line', async () => {
+    const h = harness({ masters: new FakeSigner() });
+    await h.put(KEY, bytes('web'));
+    await h.media.put(
+      'masters/psi/party.psd',
+      text('put here some other way'),
+      'application/octet-stream',
+    );
+    const over = await post(h, '/library/file/master/start', {
+      key: KEY,
+      name: 'party.psd',
+      size: 5,
+    });
+    expect(over.status).toBe(409);
+    expect((await json(over)).error).toMatch(/Rescan/);
     expect(
-      (await post(h, '/library/file/master/complete', { key: KEY, name: 'x.psd', size: 100 }))
-        .status,
-    ).toBe(404);
+      (
+        await post(h, '/library/file/master/start', {
+          key: KEY,
+          name: 'party.psd',
+          size: 5,
+          replace: true,
+        })
+      ).status,
+    ).toBe(200);
+    const long = await post(h, '/library/file/master/start', {
+      key: KEY,
+      name: `${'x'.repeat(300)}.psd`,
+      size: 5,
+      replace: true,
+    });
+    expect(long.status).toBe(400);
+    const control = await post(h, '/library/file/master/start', {
+      key: KEY,
+      name: 'bad\u0007name.psd',
+      size: 5,
+      replace: true,
+    });
+    expect(control.status).toBe(400);
   });
 });
 
 describe('a master on file', () => {
-  async function withMaster(h: H, name = 'party.psd', content = 'master bytes') {
-    await h.put(KEY, bytes('web'));
-    const master = bytes(content);
-    const plan = (await json(
-      await post(h, '/library/file/master/start', { key: KEY, name, size: master.byteLength }),
-    )) as { mode: string; masterKey: string; url: string };
-    await playBrowser(h, plan, master);
-    await post(h, '/library/file/master/complete', { key: KEY, name, size: master.byteLength });
-    return plan.masterKey;
-  }
-
   it('downloads through the library as an attachment, never inline, and audits it', async () => {
     const h = harness({ masters: new FakeSigner() });
     await withMaster(h, 'Party Final.psd', 'the master');
@@ -397,7 +485,7 @@ describe('rescan links masters by stem', () => {
   it('links what the bucket holds under masters/, drops links whose object is gone, counts orphans', async () => {
     const h = harness();
     await h.put(KEY, bytes('web'));
-    await h.put('media/psi/scan.png', bytes('scan'));
+    await h.put('media/psi/scan.png', png('scan'));
     await h.media.put('masters/psi/party.ai', bytes('ai'), 'application/octet-stream');
     await h.media.put('masters/psi/scan.tif', bytes('tif'), 'application/octet-stream');
     await h.media.put('masters/psi/orphan.psd', bytes('psd'), 'application/octet-stream');

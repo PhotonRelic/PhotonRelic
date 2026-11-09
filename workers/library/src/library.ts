@@ -229,10 +229,23 @@ export async function recordUpload(
   layout: MediaLayout,
   u: UploadRecord,
   now: Date,
+  mode: 'upload' | 'complete' = 'upload',
 ): Promise<void> {
   const subject = subjectOf(layout, u.key);
   const cap = u.capture ?? {};
   const d = u.describe ?? {};
+  // A fresh upload describes its bytes and may correct what the browser knew
+  // about them; a completion only fills what a lost record left empty, so a
+  // request that sent no bytes cannot rewrite the record of an object it did
+  // not store. The column names are this function's own, never input.
+  const own = (col: string) =>
+    mode === 'complete'
+      ? `${col} = COALESCE(assets.${col}, excluded.${col})`
+      : `${col} = excluded.${col}`;
+  const fresh = (col: string) =>
+    mode === 'complete'
+      ? `${col} = COALESCE(assets.${col}, excluded.${col})`
+      : `${col} = COALESCE(excluded.${col}, assets.${col})`;
   await db
     .prepare(
       `INSERT INTO assets (key, etag, sha256, bytes, content_type, width, height, subject, source, first_seen, uploaded_by, filed_by, filed_at,
@@ -241,15 +254,15 @@ export async function recordUpload(
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'upload', ?9, ?10, ?10, ?9, ?11, ?12, ?13, ?14, ?15,
                ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)
        ON CONFLICT(key) DO UPDATE SET etag = excluded.etag, sha256 = excluded.sha256, bytes = excluded.bytes,
-         content_type = excluded.content_type, width = excluded.width, height = excluded.height,
+         content_type = excluded.content_type, ${own('width')}, ${own('height')},
          subject = COALESCE(assets.subject, excluded.subject),
-         source = 'upload', uploaded_by = excluded.uploaded_by,
+         source = 'upload', ${own('uploaded_by')},
          filed_by = COALESCE(assets.filed_by, excluded.filed_by), filed_at = COALESCE(assets.filed_at, excluded.filed_at),
-         captured_at = COALESCE(excluded.captured_at, assets.captured_at),
-         camera = COALESCE(excluded.camera, assets.camera),
-         lens = COALESCE(excluded.lens, assets.lens),
-         original_width = COALESCE(excluded.original_width, assets.original_width),
-         original_height = COALESCE(excluded.original_height, assets.original_height),
+         ${fresh('captured_at')},
+         ${fresh('camera')},
+         ${fresh('lens')},
+         ${fresh('original_width')},
+         ${fresh('original_height')},
          tags = CASE WHEN assets.tags = '[]' THEN excluded.tags ELSE assets.tags END,
          alt_default = CASE WHEN assets.alt_default = '' THEN excluded.alt_default ELSE assets.alt_default END,
          credit = COALESCE(assets.credit, excluded.credit),
@@ -708,18 +721,80 @@ export function checkRights(
 }
 
 /**
- * A master link: any URL with a scheme and something after it, and no control
- * characters. A space in the path is allowed, since SharePoint's "Shared
- * Documents" has one; the browser encodes it on the way out.
+ * The schemes a master link may use: the web, the cloud stores, and the
+ * network shares an office keeps masters on. Rendered as a link on the file
+ * page, so a scheme the browser would run as code (javascript:, data:) is
+ * never one of them; the list is an allowlist, not a denylist, so a new
+ * scheme is a deliberate addition here.
+ */
+export const MASTER_URL_SCHEMES = new Set([
+  'https:',
+  'http:',
+  's3:',
+  'gs:',
+  'azure:',
+  'wasb:',
+  'wasbs:',
+  'abfs:',
+  'abfss:',
+  'smb:',
+  'afp:',
+  'nfs:',
+  'file:',
+  'ftp:',
+  'sftp:',
+]);
+
+/**
+ * A master link: a URL on an allowed scheme with something after the scheme,
+ * and no control characters. A space in the path is allowed, since
+ * SharePoint's "Shared Documents" has one; the browser encodes it on the way out.
  */
 export function isMasterUrl(s: string): boolean {
   if (hasControl(s)) return false;
   try {
     const u = new URL(s);
-    return u.protocol.length > 1 && s.length > u.protocol.length + 1;
+    return MASTER_URL_SCHEMES.has(u.protocol) && s.length > u.protocol.length + 1;
   } catch {
     return false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Locks: one run at a time for the operations that walk everything
+// ---------------------------------------------------------------------------
+
+/** How long a lock holder is believed to be alive; after this a lock is taken over. */
+export const LOCK_STALE_MS = 15 * 60 * 1000;
+
+/**
+ * Takes the named lock for `actor`, or says who holds it. A lock older than
+ * LOCK_STALE_MS belongs to a run that died, and is taken over.
+ */
+export async function acquireLock(
+  db: Db,
+  name: string,
+  actor: string,
+  now: Date,
+): Promise<{ ok: true } | { ok: false; actor: string; since: string }> {
+  const held = await db
+    .prepare('SELECT actor, since FROM locks WHERE name = ?1')
+    .bind(name)
+    .first<{ actor: string; since: string }>();
+  if (held && now.getTime() - Date.parse(held.since) < LOCK_STALE_MS)
+    return { ok: false, actor: held.actor, since: held.since };
+  await db
+    .prepare(
+      `INSERT INTO locks (name, actor, since) VALUES (?1, ?2, ?3)
+       ON CONFLICT(name) DO UPDATE SET actor = excluded.actor, since = excluded.since`,
+    )
+    .bind(name, actor, now.toISOString())
+    .run();
+  return { ok: true };
+}
+
+export async function releaseLock(db: Db, name: string): Promise<void> {
+  await db.prepare('DELETE FROM locks WHERE name = ?1').bind(name).run();
 }
 
 /**

@@ -29,15 +29,18 @@ export interface MediaListing {
 export interface PutOptions {
   /** Custom metadata kept on the object itself, so the bucket is self-describing. */
   customMetadata?: Record<string, string>;
+  /** Write only if nothing is at the key; `put` answers false when something was. */
+  ifAbsent?: boolean;
 }
 
 export interface MediaBucket {
+  /** Stores the object; false only when `ifAbsent` was asked and the key was taken. */
   put(
     key: string,
     body: ReadableStream | ArrayBuffer | string,
     contentType: string,
     opts?: PutOptions,
-  ): Promise<void>;
+  ): Promise<boolean>;
   get(key: string): Promise<{ body: ReadableStream; contentType: string; size: number } | null>;
   /** Existence and size without the body, with the custom metadata an upload stamped on the object. */
   head(key: string): Promise<{
@@ -189,11 +192,16 @@ export class R2MediaBucket implements MediaBucket {
     body: ReadableStream | ArrayBuffer | string,
     contentType: string,
     opts: PutOptions = {},
-  ): Promise<void> {
-    await this.bucket.put(key, body, {
+  ): Promise<boolean> {
+    // `If-None-Match: *` makes R2 refuse the write when the key is taken, which
+    // closes the gap between a HEAD that saw nothing and the PUT: two uploads
+    // racing for a new key cannot both win. R2 answers null, not an error.
+    const stored = await this.bucket.put(key, body, {
       httpMetadata: { contentType, cacheControl: 'public, max-age=60' },
       ...(opts.customMetadata ? { customMetadata: opts.customMetadata } : {}),
+      ...(opts.ifAbsent ? { onlyIf: new Headers({ 'if-none-match': '*' }) } : {}),
     });
+    return stored !== null;
   }
   async get(key: string) {
     const o = await this.bucket.get(key);
@@ -279,19 +287,21 @@ export class MemoryMediaBucket implements MediaBucket {
     body: ReadableStream | ArrayBuffer | string,
     contentType: string,
     opts: PutOptions = {},
-  ): Promise<void> {
+  ): Promise<boolean> {
     const bytes =
       typeof body === 'string'
         ? (new TextEncoder().encode(body).buffer as ArrayBuffer)
         : body instanceof ArrayBuffer
           ? body
           : await new Response(body).arrayBuffer();
+    if (opts.ifAbsent && this.objects.has(key)) return false;
     this.objects.set(key, {
       bytes,
       contentType,
       etag: await memoryEtag(bytes),
       ...(opts.customMetadata ? { customMetadata: opts.customMetadata } : {}),
     });
+    return true;
   }
   async get(key: string) {
     const o = this.objects.get(key);

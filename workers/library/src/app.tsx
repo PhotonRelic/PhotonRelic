@@ -72,26 +72,33 @@ export function createApp(deps: AppDeps): App {
     "frame-ancestors 'none'",
   ].join('; ');
 
-  app.get('/healthz', (c) => c.json({ ok: true, environment: deps.environment }));
+  /** The headers every response carries, pages and errors alike. */
+  const secure = async (pending: Response | Promise<Response>): Promise<Response> => {
+    const res = await pending;
+    res.headers.set('cache-control', 'no-store');
+    res.headers.set('x-frame-options', 'DENY');
+    res.headers.set('x-content-type-options', 'nosniff');
+    res.headers.set('referrer-policy', 'same-origin');
+    res.headers.set('permissions-policy', 'camera=(), microphone=(), geolocation=()');
+    res.headers.set('cross-origin-opener-policy', 'same-origin');
+    if (res.headers.get('content-type')?.startsWith('text/html'))
+      res.headers.set('content-security-policy', csp);
+    return res;
+  };
+
+  app.get('/healthz', (c) => secure(c.json({ ok: true, environment: deps.environment })));
 
   app.use('*', async (c, next) => {
     const identity = await deps.access.verify(c.req.raw);
     if (!identity) {
-      return c.text('Unauthorized: a valid Cloudflare Access identity is required.', 401, {
-        'cache-control': 'no-store',
-      });
+      return secure(c.text('Unauthorized: a valid Cloudflare Access identity is required.', 401));
     }
     if (crossSiteWrite(c.req.raw)) {
-      return c.text('Forbidden: cross-site request.', 403, { 'cache-control': 'no-store' });
+      return secure(c.text('Forbidden: cross-site request.', 403));
     }
     c.set('identity', identity);
     await next();
-    c.res.headers.set('cache-control', 'no-store');
-    c.res.headers.set('x-frame-options', 'DENY');
-    c.res.headers.set('x-content-type-options', 'nosniff');
-    c.res.headers.set('referrer-policy', 'same-origin');
-    if (c.res.headers.get('content-type')?.startsWith('text/html'))
-      c.res.headers.set('content-security-policy', csp);
+    await secure(c.res);
   });
 
   app.get('/', (c) => c.redirect('/library', 302));
@@ -100,21 +107,18 @@ export function createApp(deps: AppDeps): App {
 
   app.notFound((c) => {
     c.status(404);
-    return page(c, deps, 'Not found', <p>No such page.</p>);
+    return secure(page(c, deps, 'Not found', <p>No such page.</p>));
   });
   app.onError((err, c) => {
     console.error(
       JSON.stringify({ msg: 'unhandled', error: String(err), stack: err.stack, path: c.req.path }),
     );
-    // Before the identity is set (the Access check itself failed) there is no layout to render.
-    if (!c.get('identity'))
-      return c.text(`Error: ${String(err)}`, 500, { 'cache-control': 'no-store' });
+    // Before the identity is set (the Access check itself failed) there is no
+    // layout to render, and no reader who should learn what went wrong.
+    if (!c.get('identity')) return secure(c.text('Error: something went wrong.', 500));
     c.status(500);
-    return page(
-      c,
-      deps,
-      'Error',
-      <p class="flash flash-error">Something went wrong: {String(err)}</p>,
+    return secure(
+      page(c, deps, 'Error', <p class="flash flash-error">Something went wrong: {String(err)}</p>),
     );
   });
   return app;

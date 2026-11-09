@@ -10,11 +10,14 @@ import { SqliteDb } from './sqlite.js';
 export const STAFF: Identity = { email: 'staff@example.com', kind: 'user' };
 export const ORIGIN = 'https://media-admin.example.com';
 
-export const bytes = (s: string) => new TextEncoder().encode(s).buffer as ArrayBuffer;
+/** Raw text as bytes, for anything that is not an image: masters, sniff probes. */
+export const text = (s: string) => new TextEncoder().encode(s).buffer as ArrayBuffer;
 
-/** Bytes that sniff as a JPEG or a PNG, distinct per tag, so a Replace passes the format check. */
+/** Bytes that sniff as a JPEG or a PNG, distinct per tag, so an upload or a Replace passes the format check. */
 export const jpeg = (tag: string) =>
   new Uint8Array([0xff, 0xd8, 0xff, 0xe0, ...new TextEncoder().encode(tag)]).buffer as ArrayBuffer;
+/** What most tests upload under a .jpg key: a JPEG whose tail is the tag, so each tag is a distinct file. */
+export const bytes = jpeg;
 export const png = (tag: string) =>
   new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...new TextEncoder().encode(tag)])
     .buffer as ArrayBuffer;
