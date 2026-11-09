@@ -6,6 +6,8 @@ Within a version, **Operators must do** comes first whenever there is something 
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-09
+
 ### Operators must do
 
 - Migration 0009 runs on deploy: two small tables, for master uploads in flight and for the library's own locks. Nothing to configure.
