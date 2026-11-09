@@ -80,16 +80,6 @@ HOWTO
 fi
 unset CLOUDFLARE_BOOTSTRAP_TOKEN
 case "$BOOT" in *[!A-Za-z0-9_-]*) die "CLOUDFLARE_BOOTSTRAP_TOKEN does not look like an API token" ;; esac
-# The account: from the environment or .env, or, when neither has it, the one
-# account the bootstrap token is scoped to.
-if [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
-  CLOUDFLARE_ACCOUNT_ID=$(cf_as "$BOOT" GET "/accounts?per_page=5" | json '(r.success && r.result.length === 1 && r.result[0].id) || null' 2>/dev/null || true)
-  [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || die "set CLOUDFLARE_ACCOUNT_ID (environment or ./.env); the bootstrap token does not name exactly one account"
-  echo "account id taken from the bootstrap token: $CLOUDFLARE_ACCOUNT_ID"
-  env_has CLOUDFLARE_ACCOUNT_ID || env_set CLOUDFLARE_ACCOUNT_ID "$CLOUDFLARE_ACCOUNT_ID"
-fi
-case "$CLOUDFLARE_ACCOUNT_ID" in *[!0-9a-f]*|"") die "CLOUDFLARE_ACCOUNT_ID must be 32 hex characters" ;; esac
-A=$CLOUDFLARE_ACCOUNT_ID
 case "$EXPIRES" in ""|*[!0-9]*) [ -z "$EXPIRES" ] || die "--expires takes a number of days" ;; esac
 
 # cfb METHOD PATH [JSON]  -> a call with the bootstrap token (header via stdin, like cf)
@@ -105,6 +95,17 @@ env_set() {
 # env_note TEXT -> a comment line in .env (the deploy token's id, so a re-run can find it)
 env_note() { [ -f ./.env ] || ( umask 077; : > ./.env ); chmod 600 ./.env; printf '# %s\n' "$1" >> ./.env; }
 errors_of() { printf '%s' "$1" | json '(r.errors || []).map(e=>e.code+" "+e.message).join("; ") || "no detail"' 2>/dev/null || echo "no answer"; }
+
+# The account: from the environment or .env, or, when neither has it, the one
+# account the bootstrap token is scoped to.
+if [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+  CLOUDFLARE_ACCOUNT_ID=$(cfb GET "/accounts?per_page=5" | json '(r.success && r.result.length === 1 && r.result[0].id) || null' 2>/dev/null || true)
+  [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || die "set CLOUDFLARE_ACCOUNT_ID (environment or ./.env); the bootstrap token does not name exactly one account"
+  echo "account id taken from the bootstrap token: $CLOUDFLARE_ACCOUNT_ID"
+  env_has CLOUDFLARE_ACCOUNT_ID || env_set CLOUDFLARE_ACCOUNT_ID "$CLOUDFLARE_ACCOUNT_ID"
+fi
+case "$CLOUDFLARE_ACCOUNT_ID" in *[!0-9a-f]*|"") die "CLOUDFLARE_ACCOUNT_ID must be 32 hex characters" ;; esac
+A=$CLOUDFLARE_ACCOUNT_ID
 
 echo "== Bootstrap token"
 # Only an account-owned bootstrap token (Manage Account → Account API Tokens) is
