@@ -26,6 +26,10 @@ The first release. Two Workers, one bucket, one database, one login: a public **
 - **Deployment.** `init-deploy-repo.sh` creates a private deployment repository with PhotonRelic as a pinned submodule; `preflight.sh` checks the machine, the token, its permissions and the hostnames' zones before anything is created; `provision.sh` creates the Access application, the bucket and its CORS rule, and the database, and writes their ids into the configuration; `deploy.sh` applies migrations and deploys both Workers; `verify.sh` checks the result from the outside; `install.sh` runs all of it from one command; `upgrade.sh` moves a deployment to a newer release. `docs/deploy.md` for people, `AGENTS.md` for an agent doing it for them.
 - **Database.** Migrations 0001 to 0008: the asset and audit tables, the search index, focal points, rights, capture data, the search index over capture fields, the license column, and the descriptive fields.
 
+### Fixed
+
+- `verify.sh` no longer reports "nothing answered" when only the machine's own resolver is behind: a hostname checked before its DNS record existed is cached as missing for up to half an hour, so the checks now resolve through 1.1.1.1 and say so. A hostname that resolves nowhere, and a hostname that resolves but does not answer, get their own messages.
+
 ### Security
 
 - The library refuses to start without `ACCESS_AUD`, so a deployment that skipped provisioning fails closed.

@@ -19,21 +19,45 @@ LIB="$ENV_DIR/library.toml"
 RES="$ENV_DIR/resizer.toml"
 host_of() { sed -n 's/.*pattern = "\([^"]*\)".*/\1/p' "$1" | head -n 1; }
 # status URL [header...] -> HTTP status, or 000 when nothing answered
-status() { u=$1; shift; st=$(curl -s -o /dev/null -m 20 -w '%{http_code}' "$@" "$u" 2>/dev/null || true); printf '%s' "${st:-000}"; }
-header() { curl -s -m 20 -D - -o /dev/null "$2" 2>/dev/null | tr -d '\r' | sed -n "s/^$1: *//Ip" | head -n 1; }
+# shellcheck disable=SC2086
+status() { u=$1; shift; st=$(curl -s -o /dev/null -m 20 -w '%{http_code}' $RESOLVE "$@" "$u" 2>/dev/null || true); printf '%s' "${st:-000}"; }
+# shellcheck disable=SC2086
+header() { curl -s -m 20 -D - -o /dev/null $RESOLVE "$2" 2>/dev/null | tr -d '\r' | sed -n "s/^$1: *//Ip" | head -n 1; }
+# resolve HOST -> sets RESOLVE and NORESOLVE. A hostname checked once before its
+# DNS record existed is cached as missing by the machine's own resolver for up
+# to half an hour, so when the local lookup fails the checks ask Cloudflare's
+# resolver and pin the answer; the deployment is judged, not the laptop.
+RESOLVE=""; NORESOLVE=""
+resolve() {
+  RESOLVE=""; NORESOLVE=""
+  rc=0; curl -s -o /dev/null -m 20 "https://$1/" >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 6 ] || return 0
+  ip=""
+  if command -v dig >/dev/null 2>&1; then ip=$(dig +short A "$1" @1.1.1.1 2>/dev/null | grep -E '^[0-9.]+$' | head -n 1); fi
+  if [ -z "$ip" ] && command -v nslookup >/dev/null 2>&1; then ip=$(nslookup -type=A "$1" 1.1.1.1 2>/dev/null | sed -n 's/^Address: *\([0-9.]*\)$/\1/p' | head -n 1); fi
+  if [ -n "$ip" ]; then
+    RESOLVE="--resolve $1:443:$ip"
+    note "$1 resolves through 1.1.1.1 but not through this machine's resolver yet (a stale answer from before the record existed; it expires within 30 minutes). Checked through 1.1.1.1."
+  else
+    NORESOLVE=1
+  fi
+}
 
 if [ -f "$RES" ]; then
   RH=$(host_of "$RES")
   echo "== Resizer at https://$RH"
+  resolve "$RH"
   st=$(status "https://$RH/")
   case "$st" in
-    000) fail "nothing answered at https://$RH" "a custom domain can take a minute after the first deploy; check the hostname in resizer.toml and that deploy.sh finished" ;;
+    000) if [ -n "$NORESOLVE" ]; then fail "$RH does not resolve, here or through 1.1.1.1" "the custom domain's DNS record is not there yet: wait a minute after the first deploy, and check the hostname in resizer.toml"
+         else fail "nothing answered at https://$RH" "the hostname resolves but nothing answered: check that deploy.sh finished and the custom domain is attached to the resizer"; fi ;;
     5*) fail "https://$RH answered $st" "read the Worker's logs (Workers & Pages → the resizer → Logs) and check its bindings" ;;
     *) pass "answers ($st for the bare origin, as expected)" ;;
   esac
   if [ "$st" != 000 ]; then
     st=$(status "https://$RH/masters/probe"); [ "$st" = 404 ] && pass "refuses masters/ ($st)" || fail "masters/probe answered $st, not 404" "the resizer must never serve masters/; redeploy from a current PhotonRelic"
-    body=$(curl -s -m 20 "https://$RH/api/v1/assets/not-a-filed-key" 2>/dev/null || true)
+    # shellcheck disable=SC2086
+    body=$(curl -s -m 20 $RESOLVE "https://$RH/api/v1/assets/not-a-filed-key" 2>/dev/null || true)
     code=$(printf '%s' "$body" | json '(r.error && r.error.code) || null' 2>/dev/null || true)
     case "$code" in
       NOT_FOUND) pass "metadata API answers (404 NOT_FOUND for an unknown key)" ;;
@@ -57,10 +81,12 @@ if [ -f "$LIB" ]; then
   LH=$(host_of "$LIB")
   echo "== Library at https://$LH"
   if grep -q '^ACCESS_AUD = "REPLACE_' "$LIB"; then fail "ACCESS_AUD is still a placeholder" "run scripts/provision.sh, then deploy.sh again"; else pass "ACCESS_AUD is set"; fi
+  resolve "$LH"
   st=$(status "https://$LH/")
   loc=$(header location "https://$LH/")
   case "$st" in
-    000) fail "nothing answered at https://$LH" "a custom domain can take a minute after the first deploy; check the hostname in library.toml" ;;
+    000) if [ -n "$NORESOLVE" ]; then fail "$LH does not resolve, here or through 1.1.1.1" "the custom domain's DNS record is not there yet: wait a minute after the first deploy, and check the hostname in library.toml"
+         else fail "nothing answered at https://$LH" "the hostname resolves but nothing answered: check that deploy.sh finished and the custom domain is attached to the library"; fi ;;
     302|301|303|307)
       case "$loc" in *cloudflareaccess.com*) pass "redirects to the Access login" ;; *) fail "redirects to $loc, not to Access" "check the Access application for $LH (Zero Trust → Access → Applications)" ;; esac ;;
     200) fail "the library answered 200 without a login" "the hostname is not behind Access: run scripts/provision.sh and check the Access application's domain is exactly $LH" ;;
