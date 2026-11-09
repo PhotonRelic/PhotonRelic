@@ -1,6 +1,6 @@
 {
   "name": "@photonrelic/resizer",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Serves images from an R2 bucket and resizes them on request through the Cloudflare Images binding, from a fixed menu, cached at the edge.",
   "license": "Apache-2.0",
