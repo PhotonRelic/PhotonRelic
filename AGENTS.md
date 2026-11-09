@@ -15,6 +15,7 @@ PhotonRelic is a digital asset manager for images that runs entirely on Cloudfla
 | `packages/media-params/` | The resize menu and URL builder shared with websites. |
 | `deploy/example/` | The template a deployment is made from. Everything else under `deploy/` is ignored by git. |
 | `scripts/install.sh` | The whole procedure below from one command; every question has a flag. Attached to every release. |
+| `scripts/mint-tokens.sh` | Creates the deployment's API tokens from one bootstrap token, each named and scoped to one job; the installer calls it when `CLOUDFLARE_BOOTSTRAP_TOKEN` is set. |
 | `scripts/init-deploy-repo.sh` | Creates the private deployment repository, pinned to a release. |
 | `scripts/preflight.sh` | Checks the machine, token and account before anything is created. |
 | `scripts/provision.sh` | Creates the Access application, bucket, database; writes ids into the config. |
@@ -26,7 +27,7 @@ PhotonRelic is a digital asset manager for images that runs entirely on Cloudfla
 
 ## Rules
 
-1. **Never ask for or handle a token value in the conversation.** The person creates tokens in the Cloudflare dashboard and puts them into `.env` themselves. You tell them which permissions a token needs (the table in `docs/deploy.md`, Tokens) and which variable name to use. If a token is wrong, preflight says so; you relay the message.
+1. **Never ask for or handle a token value in the conversation.** The person creates tokens in the Cloudflare dashboard and puts them into `.env` or their own shell environment themselves. You tell them which permissions a token needs (the table in `docs/deploy.md`, Tokens, or the two for a bootstrap token) and which variable name to use. If a token is wrong, preflight says so; you relay the message.
 2. **Run preflight before provision, and `pnpm run check` before deploy.** Both create nothing. Do not skip them to save time.
 3. **Stop and report on any `FAIL` or API error.** Do not retry the same command hoping for a different result, and do not work around a failed check.
 4. **Never commit deployment configuration into this public repository.** Everything under `deploy/` except the example is ignored for that reason. The deployment repository is the place, and it is private.
@@ -47,6 +48,7 @@ Ask these before step 2. Everything else you can find out or decide.
 | The resizer's hostname (public) | Same | `img.example.com` |
 | The email domains staff sign in with | The Access policy | `example.com` |
 | Their Cloudflare account ID | For `.env`; shown on the account's home page | (32 hex characters) |
+| Whether they want to create the tokens themselves, or give you one bootstrap token that mints them | Decides between the two paths below | "mint them" |
 | Confirmation that the account is on Workers Paid and has R2, Images and Zero Trust enabled | Preflight cannot read the plan or Images with the deploy token | yes / no |
 | Whether they want the optional features now: usage counts, cache purge, masters in the bucket | Each needs a token they create | later |
 
@@ -54,7 +56,16 @@ Ask these before step 2. Everything else you can find out or decide.
 
 Each step gives the command and what a good result looks like. Run commands as written.
 
-**The short way.** Once the person has created the token and put it in their own environment (`export CLOUDFLARE_API_TOKEN=…` in their shell, done by them, not by you), the installer does steps 2 to 8 in one run. First without creating anything:
+**The fully automated way: one bootstrap token.** The person does not have to build the deploy token's seven permissions in the dashboard, nor the optional ones. They create one token with one permission, **Account → Account API Tokens → Edit**, scoped to their one account, with an expiry of a day and, if they can, their IP address, and export it in their own shell as `CLOUDFLARE_BOOTSTRAP_TOKEN` before starting you. (A user token from the **Create additional tokens** template works too.) With that in your environment, the installer mints every token the deployment needs through the API, each named `photonrelic-<env>-<purpose>` and scoped to exactly what it does: the deploy token always, plus `--usage` (Account Analytics Read), `--purge` (Cache Purge on the resizer's zone, with `CF_ZONE_ID` set for you) and `--masters` (an R2 key pair on the one media bucket, minted after provisioning creates the bucket). Each lands in the deployment repository's `.env`, mode 600; the bootstrap token itself is never written anywhere. `--retire-bootstrap` deletes the bootstrap token at the end, so nothing powerful outlives the installation.
+
+```sh
+sh scripts/install.sh --dir ../<dir> --name <env> --library-host <library host> --resizer-host <resizer host> \
+  --account-id <account id> --email-domains <domains> --usage --purge --masters --retire-bootstrap --yes
+```
+
+Be straight with the person about what that token is: a token that can mint tokens is as powerful as anything it mints, which for this account is everything. The expiry, the IP filter and `--retire-bootstrap` are what make it acceptable; say so when you ask for it. **Always pass `--retire-bootstrap`** unless the person says they will reuse the token for another environment, and in that case tell them at hand-over that it is still valid and where to delete it. If the install stops partway, the installer prints the retire command; run it, or relay it, before anything else. Never leave a bootstrap token behind without the person knowing. Afterwards they can audit what was created under **Manage Account → Account API Tokens**, where every token this run made is named `photonrelic-<env>-…`. Without `CLOUDFLARE_BOOTSTRAP_TOKEN` in your environment the installer behaves as below and the person creates the deploy token themselves.
+
+**The short way with their own deploy token.** Once the person has created the token and put it in their own environment (`export CLOUDFLARE_API_TOKEN=…` in their shell, done by them, not by you), the installer does steps 2 to 8 in one run. First without creating anything:
 
 ```sh
 sh scripts/install.sh --dir ../<dir> --name <env> --library-host <library host> --resizer-host <resizer host> \

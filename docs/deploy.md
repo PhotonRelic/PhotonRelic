@@ -127,6 +127,27 @@ Also in `.env`: `CLOUDFLARE_ACCOUNT_ID`, and `ACCESS_ALLOWED_EMAIL_DOMAINS`, the
 | `CACHE_PURGE_TOKEN` | Zone → Cache Purge → Purge, on the resizer's zone. Also uncomment `CF_ZONE_ID` in `library.toml`. | Replace, Delete and detected changes clear the edge cache at once instead of within a day. |
 | `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` | An **R2 API token** (R2 → Manage API tokens, a different kind of token): Object Read & Write, on the one media bucket, no expiry. | Masters stored in the bucket, uploaded from the browser. Without it, masters can still be linked by URL. |
 
+### Or let the installer mint them
+
+Instead of building the deploy token and the optional ones by hand, you can create a single **bootstrap token** and let the scripts create the rest through the API, each named `photonrelic-<env>-<purpose>` and scoped to the one thing it does.
+
+The bootstrap token has one permission, **Account → Account API Tokens → Edit**, on your one account (a user token made from the **Create additional tokens** template works too). Give it an expiry of a day and your IP address under Client IP Address Filtering. The script needs no zone permission on it: the deploy token it mints starts with every zone in the account, looks up the zones of your two hostnames with its own permissions, and is then narrowed to those. Then, in the shell you run the installer from:
+
+```sh
+export CLOUDFLARE_BOOTSTRAP_TOKEN=…     # pasted from the dashboard; never goes into a file
+sh install.sh --usage --purge --masters --retire-bootstrap
+```
+
+The installer mints the deploy token before preflight, the usage and purge tokens with it, the R2 key pair after provisioning has created the bucket (`--masters`), and sets `CF_ZONE_ID` for the purge. The same thing on an existing deployment repository, for one token at a time:
+
+```sh
+CLOUDFLARE_BOOTSTRAP_TOKEN=… sh photonrelic/scripts/mint-tokens.sh environments/production --purge
+```
+
+A variable already set in `.env` is left alone. Be clear about what the bootstrap token is: a token that can create tokens can create one with any permission in the account, so it is as powerful as the account itself while it exists. The short expiry, the IP filter and deleting it afterwards are what make it a reasonable thing to hand to a script or an agent. Everything it created is listed under **Manage Account → Account API Tokens**.
+
+**Delete the bootstrap token when the installation is done.** `--retire-bootstrap` does it for you at the end of a successful install; the script also deletes it on `sh photonrelic/scripts/mint-tokens.sh environments/production --retire-bootstrap`. If the install stopped partway, or you ran without the flag, the installer says so and prints that command. Until it is gone, anyone with the token can mint one with any permission in your account; a day's expiry is the backstop, not the plan.
+
 ## Preflight
 
 ```sh

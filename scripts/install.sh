@@ -22,16 +22,29 @@
 #   --dry-run               stop after preflight; create nothing in the account
 #
 # The deploy token is read from CLOUDFLARE_API_TOKEN or asked for at a hidden
-# prompt, written to <dir>/.env (never committed) and never printed. Nothing is
-# installed on your machine: git, Node 22.13+, pnpm 9+ and curl must be there.
+# prompt, written to <dir>/.env (never committed) and never printed.
+#
+# Or let the installer mint the tokens. Give it one bootstrap token in
+# CLOUDFLARE_BOOTSTRAP_TOKEN (Account → Account API Tokens → Edit on the one
+# account, nothing else) and it creates the deploy token itself, named and
+# scoped to what it does, plus whichever optional ones you ask for:
+#
+#   --usage                 a token for usage counts
+#   --purge                 a token for cache purge (sets CF_ZONE_ID too)
+#   --masters               the R2 key pair for masters in the bucket
+#   --retire-bootstrap      delete the bootstrap token when the install is done
+#
+# Nothing is installed on your machine: git, Node 22.13+, pnpm 9+ and curl
+# must be there.
 set -eu
 UPSTREAM="https://github.com/PhotonRelic/PhotonRelic.git"
 DIR=""; NAME=""; LIB_HOST=""; RES_HOST=""; ACCOUNT_ID=""; EMAIL_DOMAINS=""; TEAM_NAME=""
 VERSION=""; SOURCE=""; YES=false; DRY_RUN=false; TMP=""; ECHO_OFF=false
+USAGE=false; PURGE=false; MASTERS=false; RETIRE=false; MINT=false; BOOTSTRAP_RETIRED=false
 
-usage() { sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 say() { printf '%s\n' "$*"; }
-die() { printf 'install: %s\n' "$*" >&2; exit 1; }
+die() { printf 'install: %s\n' "$*" >&2; bootstrap_reminder; exit 1; }
 cleanup() {
   [ "$ECHO_OFF" = false ] || ( stty echo </dev/tty ) 2>/dev/null || true
   [ -z "$TMP" ] || rm -rf "$TMP"
@@ -52,10 +65,19 @@ while [ $# -gt 0 ]; do
     --source) SOURCE=${2:?}; shift 2 ;;
     --yes) YES=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
+    --usage) USAGE=true; shift ;;
+    --purge) PURGE=true; shift ;;
+    --masters) MASTERS=true; shift ;;
+    --retire-bootstrap) RETIRE=true; shift ;;
     -h|--help) usage ;;
     *) echo "install: unknown option $1" >&2; usage ;;
   esac
 done
+if [ -n "${CLOUDFLARE_BOOTSTRAP_TOKEN:-}" ]; then
+  MINT=true
+elif $USAGE || $PURGE || $MASTERS || $RETIRE; then
+  die "--usage, --purge, --masters and --retire-bootstrap need CLOUDFLARE_BOOTSTRAP_TOKEN in the environment; without it, create those tokens yourself (docs/deploy.md, Tokens)"
+fi
 
 # ask VAR --flag "question" [default]  -> fills VAR from the terminal unless set
 ask() {
@@ -84,8 +106,17 @@ run_step() {
     say "install: $title failed. Fix what it reported, then continue with:"
     say "  cd $DIR && $resume"
     say "Running the installer again with the same options also continues from here."
+    bootstrap_reminder
     exit 1
   fi
+}
+# bootstrap_reminder -> the bootstrap token can mint anything; never let it be forgotten
+bootstrap_reminder() {
+  [ "$MINT" = true ] && [ "$BOOTSTRAP_RETIRED" = false ] || return 0
+  say ""
+  say "The bootstrap token is still valid and can create any token in the account. When you are done with it:"
+  say "  CLOUDFLARE_BOOTSTRAP_TOKEN=… sh photonrelic/scripts/mint-tokens.sh environments/${NAME:-<env>} --retire-bootstrap"
+  say "or delete it where you created it (Manage Account → Account API Tokens, or My Profile → API Tokens)."
 }
 # latest_stable_tag REPO  -> the newest vX.Y.Z tag, skipping release candidates (same as lib.sh)
 latest_stable_tag() {
@@ -193,7 +224,10 @@ else
     read -r TEAM_NAME </dev/tty || TEAM_NAME=""
   fi
   case "$TEAM_NAME" in *[!a-z0-9-]*) die "--team-name is lowercase letters, digits and hyphens" ;; esac
-  if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+  if [ "$MINT" = true ]; then
+    say "the deploy token will be minted from the bootstrap token"
+    CLOUDFLARE_API_TOKEN=""
+  elif [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
     have_tty || die "no terminal to ask for the token: set CLOUDFLARE_API_TOKEN in the environment"
     printf 'Deploy token (not shown; permissions in docs/deploy.md, Tokens): ' >/dev/tty
     ECHO_OFF=true; stty -echo </dev/tty
@@ -203,12 +237,12 @@ else
   else
     say "token from CLOUDFLARE_API_TOKEN"
   fi
-  case "$CLOUDFLARE_API_TOKEN" in *[!A-Za-z0-9_-]*|"") die "that does not look like an API token" ;; esac
+  [ "$MINT" = true ] || case "$CLOUDFLARE_API_TOKEN" in *[!A-Za-z0-9_-]*|"") die "that does not look like an API token" ;; esac
   (
     umask 077
     {
       printf '# Credentials for this deployment repository. Never committed. See .env.example for the optional tokens.\n'
-      printf 'CLOUDFLARE_API_TOKEN=%s\n' "$CLOUDFLARE_API_TOKEN"
+      [ -z "$CLOUDFLARE_API_TOKEN" ] || printf 'CLOUDFLARE_API_TOKEN=%s\n' "$CLOUDFLARE_API_TOKEN"
       printf 'CLOUDFLARE_ACCOUNT_ID=%s\n' "$ACCOUNT_ID"
       printf 'ACCESS_ALLOWED_EMAIL_DOMAINS=%s\n' "$EMAIL_DOMAINS"
       [ -z "$TEAM_NAME" ] || printf 'ACCESS_TEAM_NAME=%s\n' "$TEAM_NAME"
@@ -222,12 +256,22 @@ unset CLOUDFLARE_API_TOKEN
 
 setup() { git submodule update --init -q && pnpm --dir photonrelic install --frozen-lockfile; }
 run_step "Dependencies" "pnpm run setup" setup
+MINT_ARGS=""
+if [ "$MINT" = true ]; then
+  [ -f photonrelic/scripts/mint-tokens.sh ] || die "this release has no scripts/mint-tokens.sh; install a newer one, or set CLOUDFLARE_API_TOKEN yourself"
+  $USAGE && MINT_ARGS="$MINT_ARGS --usage"; $PURGE && MINT_ARGS="$MINT_ARGS --purge"
+  # shellcheck disable=SC2086
+  run_step "Tokens" "CLOUDFLARE_BOOTSTRAP_TOKEN=… sh photonrelic/scripts/mint-tokens.sh environments/$NAME --deploy$MINT_ARGS" \
+    sh photonrelic/scripts/mint-tokens.sh "environments/$NAME" --deploy $MINT_ARGS
+fi
 run_step "Preflight" "pnpm run preflight $NAME" sh scripts/preflight.sh "$NAME"
 
 if [ "$DRY_RUN" = true ]; then
   say ""
-  say "dry run: nothing was created in the account. To continue, in $DIR:"
+  if [ "$MINT" = true ]; then say "dry run: nothing was created in the account except the tokens, now in .env. To continue, in $DIR:"
+  else say "dry run: nothing was created in the account. To continue, in $DIR:"; fi
   say "  pnpm run provision $NAME && pnpm run check && pnpm run deploy $NAME && pnpm run verify $NAME"
+  bootstrap_reminder
   exit 0
 fi
 
@@ -237,6 +281,10 @@ say "the bucket photonrelic-$NAME-media, the database photonrelic-$NAME${TEAM_NA
 say "Deploying then adds the Workers and the custom domains $LIB_HOST and $RES_HOST."
 confirm "Create them now?"
 run_step "Provision" "pnpm run provision $NAME" sh scripts/provision.sh "$NAME"
+if [ "$MINT" = true ] && [ "$MASTERS" = true ]; then
+  run_step "Masters token" "CLOUDFLARE_BOOTSTRAP_TOKEN=… sh photonrelic/scripts/mint-tokens.sh environments/$NAME --masters" \
+    sh photonrelic/scripts/mint-tokens.sh "environments/$NAME" --masters
+fi
 run_step "Build" "pnpm run check" sh scripts/deploy.sh "$NAME" --dry-run
 run_step "Deploy" "pnpm run deploy $NAME" sh scripts/deploy.sh "$NAME"
 
@@ -254,8 +302,15 @@ else
   printf '%s\n' "$out"
 fi
 
+if [ "$MINT" = true ] && [ "$RETIRE" = true ]; then
+  say ""
+  if sh photonrelic/scripts/mint-tokens.sh "environments/$NAME" --retire-bootstrap | grep -q '^   deleted'; then BOOTSTRAP_RETIRED=true
+  else say "install: the bootstrap token could not be deleted"; fi
+fi
+
 say ""
 say "installed. Sign in at https://$LIB_HOST/ with an address on $EMAIL_DOMAINS and upload a folder."
 say "Then commit the deployment repository and push it somewhere private:"
 say "  cd $DIR && git add -A && git commit -m \"$NAME: PhotonRelic deployed\""
 say "After the first upload: pnpm run verify $NAME --key <a filed key> confirms resizing."
+bootstrap_reminder
