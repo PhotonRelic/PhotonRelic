@@ -24,8 +24,40 @@ import {
 } from '@photonrelic/media-params';
 import { AwsClient } from 'aws4fetch';
 import type { Db } from './db.js';
-import { getAsset, getAssets, IMAGE_KEY } from './library.js';
+import { getAsset, getAssets, IMAGE_KEY, RIGHTS_MAX } from './library.js';
 import type { MediaBucket, MediaLayout } from './media.js';
+
+const hasControl = (s: string) =>
+  [...s].some((ch) => ch.charCodeAt(0) < 32 || ch.charCodeAt(0) === 127);
+
+/** A master's file name as the person gave it: one line, bounded, no control characters. */
+function cleanMasterName(name: string): string | null {
+  const n = name.replace(/\s+/g, ' ').trim();
+  if (!n || n.length > RIGHTS_MAX.masterName || hasControl(n)) return null;
+  return n;
+}
+
+interface PendingUpload {
+  master_key: string;
+  key: string;
+  upload_id: string | null;
+  actor: string;
+  started_at: string;
+}
+
+/** The upload this library started for a master key, if one is in flight. */
+async function pendingUpload(db: Db, masterKey: string): Promise<PendingUpload | null> {
+  return db
+    .prepare(
+      'SELECT master_key, key, upload_id, actor, started_at FROM master_uploads WHERE master_key = ?1',
+    )
+    .bind(masterKey)
+    .first<PendingUpload>();
+}
+
+async function forgetUpload(db: Db, masterKey: string): Promise<void> {
+  await db.prepare('DELETE FROM master_uploads WHERE master_key = ?1').bind(masterKey).run();
+}
 
 export { MASTER_FORMATS, MASTER_MAX_BYTES, MASTER_PART_BYTES, MASTERS_PREFIX };
 
@@ -143,10 +175,19 @@ export async function startMaster(
   signer: MasterSigner,
   layout: MediaLayout,
   req: { key: string; name: string; size: number; replace: boolean },
+  actor: string,
+  now: Date,
 ): Promise<MasterStart> {
-  const { key, name, size } = req;
+  const { key, size } = req;
   if (!IMAGE_KEY.test(key) || !(await media.head(key)))
     return { ok: false, status: 404, error: 'No such web copy in the bucket.' };
+  const name = cleanMasterName(req.name);
+  if (!name)
+    return {
+      ok: false,
+      status: 400,
+      error: `The master's name: one line, at most ${RIGHTS_MAX.masterName} characters.`,
+    };
   const masterKey = masterKeyFor(layout.uploadPrefix, key, name);
   if (!masterKey)
     return {
@@ -165,29 +206,62 @@ export async function startMaster(
       status: 409,
       error: `A master is already on file (${asset.master_name ?? asset.master_key}); tick Replace to put a new one over it.`,
     };
+  // An object already at the master's key that no row points to (a master put
+  // there some other way, or one whose link was dropped) is not written over
+  // on a plain upload either: a Rescan links it, Replace is the deliberate act.
+  if (!asset?.master_key && !req.replace && (await media.head(masterKey)))
+    return {
+      ok: false,
+      status: 409,
+      error: `An object is already at ${masterKey}; run a Rescan to link it, or tick Replace to put a new one over it.`,
+    };
+  let plan: MasterPlan;
   if (size <= MASTER_PART_BYTES) {
-    return { ok: true, plan: { mode: 'single', masterKey, url: await signer.signPut(masterKey) } };
+    plan = { mode: 'single', masterKey, url: await signer.signPut(masterKey) };
+  } else {
+    const { uploadId } = await media.createMultipart(masterKey, MASTER_CONTENT_TYPE);
+    const parts = [];
+    for (let n = 1; n <= partsFor(size); n++)
+      parts.push({ partNumber: n, url: await signer.signPart(masterKey, uploadId, n) });
+    plan = { mode: 'multipart', masterKey, uploadId, partBytes: MASTER_PART_BYTES, parts };
   }
-  const { uploadId } = await media.createMultipart(masterKey, MASTER_CONTENT_TYPE);
-  const parts = [];
-  for (let n = 1; n <= partsFor(size); n++)
-    parts.push({ partNumber: n, url: await signer.signPart(masterKey, uploadId, n) });
-  return {
-    ok: true,
-    plan: { mode: 'multipart', masterKey, uploadId, partBytes: MASTER_PART_BYTES, parts },
-  };
+  // The record of what this library started: completing and aborting act only
+  // on uploads found here.
+  await db
+    .prepare(
+      `INSERT INTO master_uploads (master_key, key, upload_id, actor, started_at) VALUES (?1, ?2, ?3, ?4, ?5)
+       ON CONFLICT(master_key) DO UPDATE SET key = excluded.key, upload_id = excluded.upload_id,
+         actor = excluded.actor, started_at = excluded.started_at`,
+    )
+    .bind(
+      masterKey,
+      key,
+      plan.mode === 'multipart' ? plan.uploadId : null,
+      actor,
+      now.toISOString(),
+    )
+    .run();
+  return { ok: true, plan };
 }
 
 export type MasterComplete =
   | { ok: true; masterKey: string; bytes: number; replaced: string | null }
-  | { ok: false; status: 400 | 404 | 409; error: string };
+  | {
+      ok: false;
+      status: 400 | 404 | 409;
+      error: string;
+      /** The object this flow created and then removed, when a size mismatch ended it. */
+      removed?: { masterKey: string; bytes: number };
+    };
 
 /**
- * Finishes an upload: completes the multipart when there is one, checks the
- * object is there at the declared size, links it to the web copy, and
- * removes a master it replaced when that one had another key (a .psd put
- * over a .tif). A size that does not match is refused and the object
- * removed: a half-upload must not pass as a master.
+ * Finishes an upload this library started: completes the multipart when
+ * there is one, checks the object is there at the declared size, links it to
+ * the web copy, and removes a master it replaced when that one had another
+ * key (a .psd put over a .tif). A size that does not match is refused and
+ * the object removed: a half-upload must not pass as a master. Without a
+ * record of the start there is nothing to complete, and nothing is removed:
+ * a master already on file is never deleted by a stray completion.
  */
 export async function completeMaster(
   db: Db,
@@ -201,10 +275,27 @@ export async function completeMaster(
     parts?: { partNumber: number; etag: string }[] | undefined;
   },
 ): Promise<MasterComplete> {
-  const masterKey = masterKeyFor(layout.uploadPrefix, req.key, req.name);
+  const name = cleanMasterName(req.name);
+  if (!name) return { ok: false, status: 400, error: 'Not a master for this key.' };
+  const masterKey = masterKeyFor(layout.uploadPrefix, req.key, name);
   if (!masterKey) return { ok: false, status: 400, error: 'Not a master for this key.' };
   const asset = await getAsset(db, req.key);
   if (!asset) return { ok: false, status: 404, error: 'No such web copy.' };
+  const pending = await pendingUpload(db, masterKey);
+  if (!pending || pending.key !== req.key)
+    return {
+      ok: false,
+      status: 409,
+      error: 'No upload of this master is in progress; start it from the file page.',
+    };
+  if ((pending.upload_id ?? undefined) !== req.uploadId)
+    return {
+      ok: false,
+      status: 409,
+      error: pending.upload_id
+        ? 'This upload is in parts; send its uploadId and parts.'
+        : 'This upload has no parts; send no uploadId.',
+    };
   if (req.uploadId) {
     if (!req.parts?.length) return { ok: false, status: 400, error: 'No parts to complete.' };
     try {
@@ -221,19 +312,39 @@ export async function completeMaster(
   if (!head) return { ok: false, status: 404, error: 'The master did not arrive.' };
   if (head.size !== req.size) {
     await media.delete(masterKey);
+    await forgetUpload(db, masterKey);
     return {
       ok: false,
       status: 409,
       error: `The master arrived at ${head.size} bytes, not the ${req.size} declared; removed.`,
+      removed: { masterKey, bytes: head.size },
     };
   }
   const replaced = asset.master_key && asset.master_key !== masterKey ? asset.master_key : null;
   if (replaced) await media.delete(replaced);
   await db
     .prepare('UPDATE assets SET master_key = ?2, master_name = ?3 WHERE key = ?1')
-    .bind(req.key, masterKey, req.name.replace(/\s+/g, ' ').trim())
+    .bind(req.key, masterKey, name)
     .run();
+  await forgetUpload(db, masterKey);
   return { ok: true, masterKey, bytes: head.size, replaced };
+}
+
+/**
+ * Cancels a multipart upload this library started, and only that one: the
+ * key and upload id must match the record of the start.
+ */
+export async function abortMaster(
+  db: Db,
+  media: MediaBucket,
+  req: { masterKey: string; uploadId: string },
+): Promise<{ ok: true; key: string } | { ok: false; status: 404; error: string }> {
+  const pending = await pendingUpload(db, req.masterKey);
+  if (!pending || pending.upload_id !== req.uploadId)
+    return { ok: false, status: 404, error: 'No such upload in progress.' };
+  await media.abortMultipart(req.masterKey, req.uploadId).catch(() => undefined);
+  await forgetUpload(db, req.masterKey);
+  return { ok: true, key: pending.key };
 }
 
 /** Removes a master from the bucket and the link to it; the recorded name stays, since it still finds the file in a backup. */

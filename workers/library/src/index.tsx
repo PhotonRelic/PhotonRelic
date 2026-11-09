@@ -4,7 +4,7 @@
  * expiry rule.
  */
 import { menuFromLists } from '@photonrelic/media-params';
-import { CloudflareAccessVerifier, FixedIdentityVerifier } from './access.js';
+import { CloudflareAccessVerifier, LocalhostVerifier } from './access.js';
 import { type App, createApp } from './app.jsx';
 import type { AppDeps } from './deps.js';
 import type { Env } from './env.js';
@@ -18,15 +18,22 @@ export type { AppDeps } from './deps.js';
 export type { Env } from './env.js';
 
 export function depsFromEnv(env: Env): AppDeps {
-  if (!env.ACCESS_AUD && env.ENVIRONMENT !== 'local') {
-    throw new Error('ACCESS_AUD must be set outside local development');
+  // Without an Access audience the only way in is local development, which
+  // declares itself with DEV_IDENTITY from .dev.vars, a file wrangler never
+  // deploys, and is then answered on localhost only (LocalhostVerifier). A
+  // deployed configuration with no audience therefore has no door at all,
+  // whatever ENVIRONMENT says; ENVIRONMENT only labels the header.
+  if (!env.ACCESS_AUD && !env.DEV_IDENTITY) {
+    throw new Error(
+      'ACCESS_AUD must be set; without Access, only local development with DEV_IDENTITY in .dev.vars may run',
+    );
   }
   if (env.ACCESS_AUD && !env.ACCESS_TEAM_DOMAIN) {
     throw new Error('ACCESS_TEAM_DOMAIN must be set with ACCESS_AUD');
   }
   const access = env.ACCESS_AUD
     ? new CloudflareAccessVerifier(env.ACCESS_TEAM_DOMAIN, env.ACCESS_AUD)
-    : new FixedIdentityVerifier({ email: env.DEV_IDENTITY ?? 'dev@localhost', kind: 'user' });
+    : new LocalhostVerifier({ email: env.DEV_IDENTITY as string, kind: 'user' });
   const usage = usageConfigFromVars(env.CF_ACCOUNT_ID, env.ANALYTICS_TOKEN, env.USAGE_DATASET);
   const mediaOrigin = env.MEDIA_ORIGIN ? env.MEDIA_ORIGIN.replace(/\/$/, '') : null;
   // Half a purge configuration is a deploy that meant to purge and will not: fail loudly.

@@ -15,6 +15,7 @@ import { type AppDeps, previewUrl, publicUrl } from '../deps.js';
 import { redirectWith, setFlash } from '../flash.js';
 import {
   type Asset,
+  acquireLock,
   checkRights,
   countDuplicateKeys,
   countExpiring,
@@ -39,6 +40,7 @@ import {
   RIGHTS_MAX,
   recordReplace,
   recordUpload,
+  releaseLock,
   replacePrecheck,
   rescan,
   retireAsset,
@@ -51,8 +53,9 @@ import {
   TOO_BIG,
 } from '../library.js';
 import { markupPanel } from '../markup.js';
-import { completeMaster, linkMasters, removeMaster, startMaster } from '../masters.js';
+import { abortMaster, completeMaster, linkMasters, removeMaster, startMaster } from '../masters.js';
 import {
+  basenameOf,
   contentTypeFor,
   isLibraryKey,
   type MediaBucket,
@@ -85,6 +88,8 @@ import {
 
 /** Unused files to a page; the whole set is computed, this is how much is shown at once. */
 const UNUSED_PAGE = 100;
+/** Search pages are offsets the database skips row by row; a page nobody has is not asked for. */
+const SEARCH_MAX_PAGE = 10_000;
 
 const SAFE_BACK = /^\/library(?:[/?#][^\s]*)?$/;
 const NO_STORE = 'No media bucket is bound to this Worker.';
@@ -269,7 +274,9 @@ export function libraryRoutes(deps: AppDeps) {
       camera: (c.req.query('camera') ?? '').trim().slice(0, SEARCH_QUERY_MAX) || null,
       state: SEARCH_STATES.find((s) => s === requested) ?? 'all',
     };
-    const pageNo = Math.max(1, Math.floor(Number(c.req.query('page')) || 1));
+    const asked = Number(c.req.query('page'));
+    const pageNo =
+      Number.isFinite(asked) && asked >= 1 ? Math.min(Math.floor(asked), SEARCH_MAX_PAGE) : 1;
     const [found, facets] = await Promise.all([
       searchAssets(deps.db, filters, SEARCH_PAGE, (pageNo - 1) * SEARCH_PAGE),
       searchFacets(deps.db, filters),
@@ -295,14 +302,28 @@ export function libraryRoutes(deps: AppDeps) {
     );
   });
 
-  /** The original object, streamed through this Worker: previews when no resizer is configured. */
+  /**
+   * The original object, streamed through this Worker: previews when no
+   * resizer is configured. The type comes from the key, not from whatever the
+   * object was stored with, and the response is sandboxed, so bytes put in
+   * the bucket some other way under an image key cannot become a page on
+   * this origin.
+   */
   app.get('/raw', async (c) => {
     const key = c.req.query('key') ?? '';
     if (!deps.media || !isLibraryKey(layout, key) || !IMAGE_KEY.test(key)) return c.notFound();
     const o = await deps.media.get(key);
     if (!o) return c.notFound();
+    const name = basenameOf(key)
+      .replace(/[^\x20-\x7e]/g, '_')
+      .replace(/["\\]/g, '_');
     return new Response(o.body, {
-      headers: { 'content-type': o.contentType, 'content-length': String(o.size) },
+      headers: {
+        'content-type': contentTypeFor(key),
+        'content-length': String(o.size),
+        'content-disposition': `inline; filename="${name}"`,
+        'content-security-policy': 'sandbox',
+      },
     });
   });
 
@@ -607,12 +628,20 @@ export function libraryRoutes(deps: AppDeps) {
     )
       return c.json({ ok: false, error: 'Send key, name and size.' }, 400);
     if (!isLibraryKey(layout, body.key)) return c.json({ ok: false, error: 'No such key.' }, 404);
-    const r = await startMaster(deps.db, deps.media, deps.masters, layout, {
-      key: body.key,
-      name: body.name,
-      size: body.size,
-      replace: body.replace === true,
-    });
+    const r = await startMaster(
+      deps.db,
+      deps.media,
+      deps.masters,
+      layout,
+      {
+        key: body.key,
+        name: body.name,
+        size: body.size,
+        replace: body.replace === true,
+      },
+      actor(c),
+      deps.now(),
+    );
     if (!r.ok) return c.json({ ok: false, error: r.error }, r.status);
     await logAction(deps.db, {
       actor: actor(c),
@@ -655,7 +684,21 @@ export function libraryRoutes(deps: AppDeps) {
       uploadId: typeof body.uploadId === 'string' ? body.uploadId : undefined,
       parts,
     });
-    if (!r.ok) return c.json({ ok: false, error: r.error }, r.status);
+    if (!r.ok) {
+      // Bytes this flow put in the bucket and took out again are an act worth a row.
+      if (r.removed)
+        await logAction(deps.db, {
+          actor: actor(c),
+          action: 'library.master_removed',
+          detail: {
+            key: body.key,
+            master: r.removed.masterKey,
+            bytes: r.removed.bytes,
+            reason: 'size mismatch on completion',
+          },
+        });
+      return c.json({ ok: false, error: r.error }, r.status);
+    }
     await logAction(deps.db, {
       actor: actor(c),
       action: 'library.master_uploaded',
@@ -681,7 +724,16 @@ export function libraryRoutes(deps: AppDeps) {
       return c.json({ ok: false, error: 'Send masterKey and uploadId.' }, 400);
     if (!body.masterKey.startsWith('masters/'))
       return c.json({ ok: false, error: 'Not a master key.' }, 400);
-    await deps.media.abortMultipart(body.masterKey, body.uploadId).catch(() => undefined);
+    const r = await abortMaster(deps.db, deps.media, {
+      masterKey: body.masterKey,
+      uploadId: body.uploadId,
+    });
+    if (!r.ok) return c.json({ ok: false, error: r.error }, r.status);
+    await logAction(deps.db, {
+      actor: actor(c),
+      action: 'library.master_aborted',
+      detail: { key: r.key, master: body.masterKey },
+    });
     return c.json({ ok: true });
   });
 
@@ -925,8 +977,24 @@ export function libraryRoutes(deps: AppDeps) {
   // Rescan ------------------------------------------------------------------
   app.post('/rescan', async (c) => {
     if (!deps.media) return redirectWith(c, '/library', 'error', NO_STORE);
-    const r = await rescan(deps.db, deps.media, layout, deps.now());
-    const m = await linkMasters(deps.db, deps.media, layout);
+    // One walk of the bucket at a time: a second click while one runs would
+    // list everything again and rebuild the index underneath the first.
+    const lock = await acquireLock(deps.db, 'rescan', actor(c), deps.now());
+    if (!lock.ok)
+      return redirectWith(
+        c,
+        '/library',
+        'error',
+        `A rescan started by ${lock.actor} at ${lock.since} is still running; wait for it.`,
+      );
+    let r: Awaited<ReturnType<typeof rescan>>;
+    let m: Awaited<ReturnType<typeof linkMasters>>;
+    try {
+      r = await rescan(deps.db, deps.media, layout, deps.now());
+      m = await linkMasters(deps.db, deps.media, layout);
+    } finally {
+      await releaseLock(deps.db, 'rescan');
+    }
     await logAction(deps.db, {
       actor: actor(c),
       action: 'library.rescan',
@@ -1046,7 +1114,11 @@ export function libraryRoutes(deps: AppDeps) {
     if (problems.length)
       console.warn(`X-Capture/X-Describe for ${key} partly ignored: ${problems.join(' ')}`);
     const warnings = problems.length ? { warnings: problems } : {};
-    const record = async (head: { size: number; etag: string | null } | null, action: string) => {
+    const record = async (
+      head: { size: number; etag: string | null } | null,
+      action: string,
+      mode: 'upload' | 'complete' = 'upload',
+    ) => {
       await recordUpload(
         deps.db,
         layout,
@@ -1063,6 +1135,7 @@ export function libraryRoutes(deps: AppDeps) {
           describe,
         },
         deps.now(),
+        mode,
       );
       await logAction(deps.db, {
         actor: who,
@@ -1077,10 +1150,11 @@ export function libraryRoutes(deps: AppDeps) {
     const existing = await media.head(key);
     if (existing) {
       // The same bytes again is a retry whose first attempt stored the object but lost
-      // its record: complete the record instead of refusing. A different file at the key
-      // is never overwritten.
+      // its record: complete the record instead of refusing, filling only what the
+      // record lacks, since this request sent no bytes to describe. A different file
+      // at the key is never overwritten.
       if (existing.customMetadata?.sha256 === sha256) {
-        await record(existing, 'library.upload_completed');
+        await record(existing, 'library.upload_completed', 'complete');
         return c.json({ ok: true, key, bytes: existing.size, completed: true, ...warnings });
       }
       return c.json(
@@ -1091,11 +1165,33 @@ export function libraryRoutes(deps: AppDeps) {
         409,
       );
     }
-    const body = c.req.raw.body;
-    if (!body) return c.json({ ok: false, error: 'No body.' }, 400);
-    await media.put(key, body, contentType, {
+    // The bytes are read whole (the cap is small) so that what the browser said
+    // about them is checked before anything is stored: the hash the record will
+    // trust, and the format the key promises.
+    const bytes = await c.req.raw.arrayBuffer();
+    if (bytes.byteLength === 0) return c.json({ ok: false, error: 'No body.' }, 400);
+    if (bytes.byteLength !== length)
+      return c.json({ ok: false, error: 'The body was not the declared length.' }, 400);
+    if ((await sha256Hex(bytes)) !== sha256)
+      return c.json({ ok: false, error: 'The bytes do not match X-SHA256; try again.' }, 400);
+    const sniffed = sniffImageType(bytes);
+    if (sniffed !== contentType)
+      return c.json(
+        {
+          ok: false,
+          error: `This key is ${contentType}; the file is ${sniffed ?? 'not a web image'}. The name must match the file.`,
+        },
+        415,
+      );
+    const stored = await media.put(key, bytes, contentType, {
       customMetadata: { sha256, uploadedBy: who, source: UPLOAD_SOURCE_TAG },
+      ifAbsent: true,
     });
+    if (!stored)
+      return c.json(
+        { ok: false, error: 'Another upload took this key first. Keys are never overwritten.' },
+        409,
+      );
     const head = await media.head(key);
     await record(head, 'library.uploaded');
     return c.json({ ok: true, key, bytes: head?.size ?? length, ...warnings });

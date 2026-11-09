@@ -100,10 +100,13 @@ export class CloudflareAccessVerifier implements AccessVerifier {
     if (!h || !p || !s || extra !== undefined) return null;
     let header: { alg?: string; kid?: string };
     let claims: Claims;
+    let signature: Uint8Array;
     try {
       header = JSON.parse(decoder.decode(b64urlToBytes(h)));
       claims = JSON.parse(decoder.decode(b64urlToBytes(p)));
+      signature = b64urlToBytes(s);
     } catch {
+      // Not a token at all; a malformed one is refused, not reported.
       return null;
     }
     if (header.alg !== 'RS256' || !header.kid) return null;
@@ -112,7 +115,7 @@ export class CloudflareAccessVerifier implements AccessVerifier {
     const ok = await crypto.subtle.verify(
       'RSASSA-PKCS1-v1_5',
       key,
-      b64urlToBytes(s),
+      signature,
       new TextEncoder().encode(`${h}.${p}`),
     );
     if (!ok) return null;
@@ -133,5 +136,20 @@ export class FixedIdentityVerifier implements AccessVerifier {
   constructor(private readonly identity: Identity) {}
   async verify(): Promise<Identity> {
     return this.identity;
+  }
+}
+
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/**
+ * The identity local development runs as, and nothing else: a request that
+ * does not arrive at localhost gets no identity at all, so a configuration
+ * that left Access off cannot be served from a public hostname. `wrangler dev`
+ * answers on localhost; a deployed Worker never does.
+ */
+export class LocalhostVerifier implements AccessVerifier {
+  constructor(private readonly identity: Identity) {}
+  async verify(request: Request): Promise<Identity | null> {
+    return LOCAL_HOSTS.has(new URL(request.url).hostname) ? this.identity : null;
   }
 }

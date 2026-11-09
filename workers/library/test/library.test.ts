@@ -11,7 +11,7 @@ import {
 } from '../src/library.js';
 import { layoutFromVars, sniffImageType, subjectOf, uploadKeyPattern } from '../src/media.js';
 import type { UsageCounts, UsageReader } from '../src/usage.js';
-import { bytes, fakePurge, harness, jpeg, ORIGIN, png, STAFF, sha256 } from './helpers.js';
+import { bytes, fakePurge, harness, jpeg, ORIGIN, png, STAFF, sha256, text } from './helpers.js';
 
 /** The flash the next page would show, from the cookie a write set. */
 const flashOf = (res: Response): string => {
@@ -361,8 +361,17 @@ describe('browse, file and filing', () => {
     expect(html).toContain('/library/raw?key=media%2Fproducts%2Fa.jpg');
     const raw = await h.req('/library/raw?key=media/products/a.jpg');
     expect(raw.status).toBe(200);
-    expect(await raw.text()).toBe('a');
+    expect(new Uint8Array(await raw.arrayBuffer())).toEqual(new Uint8Array(bytes('a')));
+    // The type comes from the key, and the response is sandboxed and inline, never a page.
+    expect(raw.headers.get('content-type')).toBe('image/jpeg');
+    expect(raw.headers.get('content-security-policy')).toBe('sandbox');
+    expect(raw.headers.get('content-disposition')).toBe('inline; filename="a.jpg"');
+    expect(raw.headers.get('x-content-type-options')).toBe('nosniff');
     expect((await h.req('/library/raw?key=private/a.jpg')).status).toBe(404);
+    // Bytes stored under an image key with another type are still served as the key's type.
+    await h.media.put('media/products/page.jpg', text('<html>hi</html>'), 'text/html');
+    const odd = await h.req('/library/raw?key=media/products/page.jpg');
+    expect(odd.headers.get('content-type')).toBe('image/jpeg');
   });
 
   it('offers copy-ready markup on the file page when the resizer is configured', async () => {
@@ -510,8 +519,8 @@ describe('replace', () => {
   it('sniffs the web formats and nothing else', () => {
     expect(sniffImageType(jpeg('x'))).toBe('image/jpeg');
     expect(sniffImageType(png('x'))).toBe('image/png');
-    expect(sniffImageType(bytes('GIF89a....'))).toBe('image/gif');
-    expect(sniffImageType(bytes('RIFF....WEBPVP8 '))).toBe('image/webp');
+    expect(sniffImageType(text('GIF89a....'))).toBe('image/gif');
+    expect(sniffImageType(text('RIFF....WEBPVP8 '))).toBe('image/webp');
     expect(
       sniffImageType(new Uint8Array([0, 0, 0, 28, ...new TextEncoder().encode('ftypavif')]).buffer),
     ).toBe('image/avif');
@@ -531,8 +540,8 @@ describe('replace', () => {
         ]).buffer,
       ),
     ).toBe('image/avif');
-    expect(sniffImageType(bytes('<svg xmlns'))).toBeNull();
-    expect(sniffImageType(bytes(''))).toBeNull();
+    expect(sniffImageType(text('<svg xmlns'))).toBeNull();
+    expect(sniffImageType(text(''))).toBeNull();
   });
 
   it('prechecks: ok, the same bytes, too big, a missing object, a key it cannot replace', async () => {
