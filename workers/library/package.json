@@ -1,6 +1,6 @@
 {
   "name": "@photonrelic/library",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "PhotonRelic's media library: browse, upload, file, de-duplicate and delete images in an R2 bucket, behind Cloudflare Access.",
   "license": "Apache-2.0",

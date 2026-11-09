@@ -6,6 +6,8 @@ Within a version, **Operators must do** comes first whenever there is something 
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-09
+
 The first release. Two Workers, one bucket, one database, one login: a public **resizer** that serves and resizes images from a fixed menu, and a private **library** behind Cloudflare Access where staff upload, describe and manage them. It needs a Cloudflare account on Workers Paid with R2, Images and Zero Trust enabled, and a domain whose DNS Cloudflare serves.
 
 ### Operators must do
