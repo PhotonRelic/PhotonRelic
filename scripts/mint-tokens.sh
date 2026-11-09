@@ -4,8 +4,10 @@
 # bootstrap token with the single permission Account → Account API Tokens →
 # Edit on the one account, passed in the environment as
 # CLOUDFLARE_BOOTSTRAP_TOKEN. That token is never written to a file by this
-# script. (A user token made from the "Create additional tokens" template
-# works too.)
+# script. Create it under Manage Account → Account API Tokens: an account-owned
+# token can delete itself at the end (--retire-bootstrap). A user token (My
+# Profile → API Tokens) works for minting, but can delete itself only if it
+# also has User → API Tokens → Edit; otherwise you delete it in the dashboard.
 #
 #   sh scripts/mint-tokens.sh deploy/<name> [--deploy] [--usage] [--purge] [--masters]
 #                                            [--all] [--expires <days>] [--retire-bootstrap]
@@ -274,7 +276,13 @@ fi
 if $RETIRE; then
   echo "== Retiring the bootstrap token"
   r=$(cfb DELETE "$(token_path "$SELF_ID" "$SELF_KIND")")
-  if printf '%s' "$r" | json 'r.success || null' >/dev/null 2>&1; then echo "   deleted"; else echo "   could not delete it; delete it in the dashboard: $(errors_of "$r")"; fi
+  if printf '%s' "$r" | json 'r.success || null' >/dev/null 2>&1; then
+    echo "   deleted"
+  elif [ "$SELF_KIND" = user ]; then
+    echo "   could not delete it: a user-owned token can delete itself only with User → API Tokens → Edit. Delete it now under My Profile → API Tokens. ($(errors_of "$r"))"
+  else
+    echo "   could not delete it; delete it now under Manage Account → Account API Tokens. ($(errors_of "$r"))"
+  fi
 fi
 echo
 case "$MINTED_KIND" in
