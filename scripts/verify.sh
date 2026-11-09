@@ -93,7 +93,7 @@ if [ -f "$LIB" ]; then
     *) fail "https://$LH answered $st" "read the Worker's logs; a 500 at start usually means ACCESS_AUD or a half-set optional secret pair" ;;
   esac
   if [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
-    out=$(pnpm --dir "$ROOT/workers/library" exec wrangler d1 migrations list DB --remote -c "$LIB" 2>&1 || true)
+    out=$(wrangler_env pnpm --dir "$ROOT/workers/library" exec wrangler d1 migrations list DB --remote -c "$LIB" 2>&1 || true)
     case "$out" in
       *"No migrations to apply"*) pass "database migrations are all applied" ;;
       *) fail "database has migrations to apply" "run scripts/deploy.sh $ENV_DIR" ;;

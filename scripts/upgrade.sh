@@ -44,7 +44,9 @@ need_credentials
 [ -z "$(git -C "$SUB" status --porcelain)" ] || die "the PhotonRelic submodule has local changes; it should be a clean checkout of a release"
 
 say "== Releases"
-git -C "$SUB" fetch -q --tags origin || die "could not fetch tags from the submodule's origin"
+origin_url=$(git -C "$SUB" remote get-url origin 2>/dev/null || true)
+is_git_source "$origin_url" || die "the submodule's origin is $origin_url; only https://, ssh:// and git@host: remotes (or a local path) are fetched from. Change it with: git -C photonrelic remote set-url origin <url>"
+git -C "$SUB" -c transfer.fsckObjects=true fetch -q --tags origin || die "could not fetch tags from the submodule's origin"
 stable=$(git -C "$SUB" tag -l 'v[0-9]*' | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n || true)
 if [ -z "$stable" ]; then
   die "the submodule's origin has no release tags. A fork or mirror needs the project's tags pushed to it:
@@ -65,7 +67,9 @@ fi
 
 say ""; say "== What changes"
 # The target's changelog, from its newest section down to the current release.
+# Escape characters are stripped so a changelog cannot hide or restyle lines.
 git -C "$SUB" show "$TARGET:CHANGELOG.md" 2>/dev/null \
+  | tr -d '\033\r' \
   | awk -v stop="## [${CURRENT#v}] - " '
       /^## \[Unreleased\]/ { skip = 1; next }
       /^## \[/ { if (stop != "## [] - " && index($0, stop) == 1) exit; skip = 0 }

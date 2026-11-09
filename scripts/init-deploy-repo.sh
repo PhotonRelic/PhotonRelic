@@ -8,21 +8,24 @@
 #
 #   sh scripts/init-deploy-repo.sh <dir> --name <env> \
 #       --library-host media-admin.example.com --resizer-host img.example.com \
-#       [--source <git url>] [--ref <tag or commit>]
+#       [--source <git url>] [--ref <tag or commit>] [--commit <sha>]
 #
 # --source is the repository the submodule points at: the public project
-# (default), your GitHub fork, or a private mirror. --ref is the release tag
-# or commit to pin; the default is the newest release at --source, or the
-# commit of this checkout when --source is a local path. <dir> must not exist
-# or must be empty. The result is staged and not committed, so you can read it
-# first. Then, inside <dir>: cp .env.example .env, fill it in, and run
-# pnpm run setup, then pnpm run preflight / provision / deploy / verify <env>
-# (always with `run`: pnpm's own setup and deploy commands shadow the scripts).
+# (default), your GitHub fork, or a private mirror; https://, ssh://, git@host:
+# or a local path. --ref is the release tag or commit to pin; the default is
+# the newest release at --source, or the commit of this checkout when --source
+# is a local path. --commit is the full commit id the checkout must resolve to
+# (printed in each release's notes), so a tag name cannot be moved under you.
+# <dir> must not exist or must be empty. The result is staged and not
+# committed, so you can read it first. Then, inside <dir>:
+# (umask 077; cp .env.example .env), fill it in, and run pnpm run setup, then
+# pnpm run preflight / provision / deploy / verify <env> (always with `run`:
+# pnpm's own setup and deploy commands shadow the scripts).
 # scripts/install.sh does all of this from one command.
 set -eu
 . "$(dirname -- "$0")/lib.sh"
-DIR=""; NAME=""; LIB_HOST=""; RES_HOST=""; SOURCE="https://github.com/PhotonRelic/PhotonRelic.git"; REF=""
-usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+DIR=""; NAME=""; LIB_HOST=""; RES_HOST=""; SOURCE="https://github.com/PhotonRelic/PhotonRelic.git"; REF=""; COMMIT=""
+usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --name) NAME=${2:?}; shift 2 ;;
@@ -30,15 +33,22 @@ while [ $# -gt 0 ]; do
     --resizer-host) RES_HOST=${2:?}; shift 2 ;;
     --source) SOURCE=${2:?}; shift 2 ;;
     --ref) REF=${2:?}; shift 2 ;;
+    --commit) COMMIT=${2:?}; shift 2 ;;
     -h|--help) usage ;;
     -*) echo "init-deploy-repo: unknown option $1" >&2; usage ;;
     *) [ -z "$DIR" ] || { echo "init-deploy-repo: one directory only" >&2; usage; }; DIR=$1; shift ;;
   esac
 done
 [ -n "$DIR" ] && [ -n "$NAME" ] && [ -n "$LIB_HOST" ] && [ -n "$RES_HOST" ] || usage
-case "$NAME" in *[!a-z0-9-]*|-*|*-) echo "init-deploy-repo: --name must be lowercase letters, digits and hyphens (it names Workers, the bucket and the database)" >&2; exit 2 ;; esac
-for h in "$LIB_HOST" "$RES_HOST"; do case "$h" in *://*|*/*|*example.com) echo "init-deploy-repo: $h is not a bare hostname of yours" >&2; exit 2 ;; esac; done
+is_env_name "$NAME" || { echo "init-deploy-repo: --name must be lowercase letters, digits and hyphens (it names Workers, the bucket and the database)" >&2; exit 2; }
+for h in "$LIB_HOST" "$RES_HOST"; do
+  case "$h" in example.com|*.example.com) echo "init-deploy-repo: $h is the documentation's placeholder, not a hostname of yours" >&2; exit 2 ;; esac
+  is_hostname "$h" || { echo "init-deploy-repo: $h is not a bare lowercase hostname (letters, digits, hyphens and dots, at least two labels)" >&2; exit 2; }
+done
 [ "$LIB_HOST" != "$RES_HOST" ] || { echo "init-deploy-repo: the library and the resizer need different hostnames" >&2; exit 2; }
+is_git_source "$SOURCE" || { echo "init-deploy-repo: --source must be https://, ssh://, git@host:path or a local path; $SOURCE would move code in the clear" >&2; exit 2; }
+case "$COMMIT" in ""|????????????????????????????????????????) ;; *) echo "init-deploy-repo: --commit takes the full 40-character commit id" >&2; exit 2 ;; esac
+case "$COMMIT" in *[!0-9a-f]*) echo "init-deploy-repo: --commit takes a hexadecimal commit id" >&2; exit 2 ;; esac
 if [ -e "$DIR" ] && [ -n "$(ls -A "$DIR" 2>/dev/null)" ]; then echo "init-deploy-repo: $DIR exists and is not empty" >&2; exit 1; fi
 command -v git >/dev/null 2>&1 || { echo "init-deploy-repo: git is required" >&2; exit 1; }
 if [ -z "$REF" ]; then
@@ -56,10 +66,15 @@ git init -q
 case "$REF" in v[0-9]*) shown=$REF ;; *) shown=$(printf %s "$REF" | cut -c1-7) ;; esac
 echo "== PhotonRelic submodule from $SOURCE at $shown"
 case "$SOURCE" in
-  /*|./*|../*) git -c protocol.file.allow=always submodule add -q -- "$SOURCE" photonrelic ;;
-  *) git submodule add -q -- "$SOURCE" photonrelic ;;
+  /*|./*|../*) git -c protocol.file.allow=always -c transfer.fsckObjects=true submodule add -q -- "$SOURCE" photonrelic ;;
+  *) git -c transfer.fsckObjects=true submodule add -q -- "$SOURCE" photonrelic ;;
 esac
 git -C photonrelic checkout -q "$REF" 2>/dev/null || { echo "init-deploy-repo: $REF is not in $SOURCE; pass --ref with a tag or commit that is" >&2; exit 1; }
+if [ -n "$COMMIT" ]; then
+  got=$(git -C photonrelic rev-parse HEAD)
+  [ "$got" = "$COMMIT" ] || { echo "init-deploy-repo: $REF at $SOURCE is commit $got, not the $COMMIT you asked for. The tag may have been moved; check the release notes" >&2; exit 1; }
+  echo "   commit $COMMIT confirmed"
+fi
 git add photonrelic
 
 echo "== environments/$NAME from deploy/example"
@@ -93,7 +108,7 @@ cat > package.json <<JSON
   "name": "photonrelic-deploy",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22.13", "pnpm": ">=9" },
+  "engines": { "node": ">=22.13", "pnpm": ">=10" },
   "scripts": {
     "setup": "git submodule update --init && pnpm --dir photonrelic install --frozen-lockfile",
     "check": "sh scripts/deploy.sh $NAME --dry-run",
@@ -141,8 +156,8 @@ scripts/{preflight,provision,deploy,verify,upgrade}.sh   wrappers for photonreli
 ## First deployment
 
 \`\`\`sh
-cp .env.example .env            # fill in the token, the account id and the staff email domains
-pnpm run setup      # submodule and its dependencies
+(umask 077; cp .env.example .env)   # readable by you alone; fill in the token, the account id and the staff email domains
+pnpm run setup                      # submodule and its dependencies
 pnpm run preflight $NAME            # checks the token, the account and the hostnames; creates nothing
 pnpm run provision $NAME            # Access application, bucket, database; writes the ids into library.toml
 git add environments && git commit -m "$NAME: provisioned"
@@ -179,7 +194,7 @@ MD
 git add -A
 echo
 echo "done: $DIR is staged, not committed. Next, in $DIR:"
-echo "  cp .env.example .env    # then fill it in"
+echo "  (umask 077; cp .env.example .env)    # then fill it in"
 echo "  pnpm run setup"
 echo "  pnpm run preflight $NAME"
 echo "  git commit -m \"PhotonRelic deployment repository for $NAME\""

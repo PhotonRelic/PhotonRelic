@@ -36,27 +36,40 @@ probe_perm() {
 }
 routes() { sed -n 's/.*pattern = "\([^"]*\)".*/\1/p' "$1"; }
 verify_token() {   # verify_token TOKEN -> "active", "denied" or an error message
-  res=$(curl -sS -H "Authorization: Bearer $1" "https://api.cloudflare.com/client/v4/user/tokens/verify")
+  res=$(cf_as "$1" GET "/user/tokens/verify")
   st=$(printf '%s' "$res" | json '(r.success && r.result && r.result.status) || null' 2>/dev/null || true)
   if [ -z "$st" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
-    res=$(curl -sS -H "Authorization: Bearer $1" "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/tokens/verify")
+    res=$(cf_as "$1" GET "/accounts/$CLOUDFLARE_ACCOUNT_ID/tokens/verify")
     st=$(printf '%s' "$res" | json '(r.success && r.result && r.result.status) || null' 2>/dev/null || true)
   fi
   [ -n "$st" ] && printf '%s' "$st" || printf '%s' "$res" | json 'r.errors && r.errors[0] && r.errors[0].message' 2>/dev/null || echo "no answer"
 }
+# file_mode FILE -> octal permission bits, on BSD and GNU stat
+file_mode() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null || echo "?"; }
 
 echo "== This machine"
 if command -v node >/dev/null 2>&1; then
   v=$(node -p 'process.versions.node')
   if node -e 'const [a,b]=process.versions.node.split(".").map(Number);process.exit(a>22||(a===22&&b>=13)?0:1)'; then pass "node $v"; else fail "node $v is older than 22.13" "install Node 22.13 or later (nvm install 22)"; fi
 else fail "node is not installed" "install Node 22.13 or later"; fi
-if command -v pnpm >/dev/null 2>&1; then pass "pnpm $(pnpm --version)"; else fail "pnpm is not installed" "run: npm install -g pnpm@12 (or corepack enable on Node 22 to 24)"; fi
-command -v curl >/dev/null 2>&1 && pass "curl" || fail "curl is not installed" "install curl"
+if command -v pnpm >/dev/null 2>&1; then
+  pv=$(pnpm --version)
+  if [ "${pv%%.*}" -ge 10 ] 2>/dev/null; then pass "pnpm $pv"; else fail "pnpm $pv is older than 10" "run: npm install -g pnpm@12 (pnpm 10 enforces the allowed-builds list that keeps dependency scripts from running)"; fi
+else fail "pnpm is not installed" "run: npm install -g pnpm@12 (or corepack enable on Node 22 to 24)"; fi
+if command -v curl >/dev/null 2>&1; then
+  cv=$(curl --version | sed -n '1s/^curl \([0-9]*\)\.\([0-9]*\).*/\1 \2/p')
+  if [ -n "$cv" ] && { [ "${cv% *}" -gt 7 ] || { [ "${cv% *}" -eq 7 ] && [ "${cv#* }" -ge 55 ]; }; }; then pass "curl $(curl --version | sed -n '1s/^curl \([0-9.]*\).*/\1/p')"
+  else fail "curl is older than 7.55" "install a current curl: the scripts hand it the token on stdin (-H @-), which older versions cannot read"; fi
+else fail "curl is not installed" "install curl"; fi
 [ -d "$ROOT/node_modules" ] && pass "dependencies installed" || note "dependencies not installed yet; deploy.sh runs pnpm install itself"
+if [ -f ./.env ]; then
+  m=$(file_mode ./.env)
+  case "$m" in 600|400) pass ".env is readable by you alone (mode $m)" ;; ?) note ".env permissions could not be read" ;; *) fail ".env is mode $m: readable by other users on this machine" "chmod 600 .env" ;; esac
+fi
 
 echo "== Credentials"
 if [ -z "${CLOUDFLARE_API_TOKEN:-}" ] || [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
-  fail "CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are not both set" "cp .env.example .env in the directory you run the scripts from, and fill them in"
+  fail "CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are not both set" "(umask 077; cp .env.example .env) in the directory you run the scripts from, and fill them in"
   printf '\npreflight: %d passed, %d failed; the account checks need the credentials\n' "$PASS" "$FAILS"; exit 1
 fi
 pass "credentials present"
@@ -130,6 +143,14 @@ for f in "$LIB" "$RES"; do
   [ -f "$f" ] || continue
   if grep -q '= "REPLACE_' "$f"; then note "$(basename "$f") has REPLACE_ placeholders: provision.sh fills them"; else pass "$(basename "$f") is provisioned"; fi
 done
+if [ -f "$LIB" ]; then
+  # The library's only mode without a login is local development; a deployed
+  # config must not use it, and must name an Access audience for deploy.sh to accept it.
+  if grep -Eq '^ENVIRONMENT = "local"' "$LIB"; then fail "library.toml sets ENVIRONMENT = \"local\", the development mode with no login" "set ENVIRONMENT = \"production\" (or any other name); deploy.sh refuses \"local\""
+  else pass "library.toml is not in local mode"; fi
+  if grep -Eq '^ACCESS_AUD = "' "$LIB"; then pass "library.toml has an ACCESS_AUD line"
+  else fail "library.toml has no ACCESS_AUD line: the library would have no login" "start from deploy/example/library.toml; provision.sh fills ACCESS_AUD in"; fi
+fi
 
 printf '\npreflight: %d passed, %d failed\n' "$PASS" "$FAILS"
 if [ "$FAILS" -gt 0 ]; then exit 1; fi
