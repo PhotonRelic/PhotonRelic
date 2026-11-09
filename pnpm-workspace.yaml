@@ -6,3 +6,8 @@ allowBuilds:
   esbuild: true
   '@biomejs/biome': true
   workerd: true
+
+# A dependency version must be at least a day old before pnpm will install it,
+# so a package compromised and published minutes ago is not picked up by an
+# update before its registry pulls it.
+minimumReleaseAge: 1440

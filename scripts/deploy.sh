@@ -6,9 +6,11 @@
 #   sh scripts/deploy.sh deploy/<name> [--dry-run]
 set -eu
 . "$(dirname -- "$0")/lib.sh"
-ENV_DIR=$(env_dir "${1:?usage: deploy.sh <environment directory> [--dry-run]}")
+usage() { sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+[ $# -ge 1 ] && [ $# -le 2 ] || usage
+ENV_DIR=$(env_dir "$1")
 ENV_NAME=$(basename -- "$ENV_DIR")
-DRY="${2:-}"
+case "${2:-}" in ""|--dry-run) DRY="${2:-}" ;; *) echo "deploy: unknown option $2 (only --dry-run is accepted)" >&2; usage ;; esac
 LIB="$ENV_DIR/library.toml"
 RES="$ENV_DIR/resizer.toml"
 
@@ -18,11 +20,22 @@ for f in "$LIB" "$RES"; do
     [ "$DRY" = "--dry-run" ] || exit 1
   fi
 done
+# The library's only unauthenticated mode is local development. A deployed
+# config must name an Access audience and must not call itself local.
+if [ -f "$LIB" ]; then
+  if grep -Eq '^ENVIRONMENT = "local"' "$LIB"; then
+    echo "$LIB sets ENVIRONMENT = \"local\": that is the development mode with no login; a deployment must not use it" >&2; exit 1
+  fi
+  if ! grep -Eq '^ACCESS_AUD = "' "$LIB"; then
+    echo "$LIB has no ACCESS_AUD line: the library must be behind Cloudflare Access; copy deploy/example/library.toml and run scripts/provision.sh" >&2; exit 1
+  fi
+fi
 [ -d "$ROOT/node_modules" ] || pnpm --dir "$ROOT" install --frozen-lockfile
 
 # Each Worker's own wrangler, from its package. Wrangler resolves `main`,
-# `assets.directory` and `migrations_dir` relative to the config file.
-wr() { pkg=$1; shift; pnpm --dir "$ROOT/workers/$pkg" exec wrangler "$@"; }
+# `assets.directory` and `migrations_dir` relative to the config file. It gets
+# the credentials, and only those, through its environment.
+wr() { pkg=$1; shift; wrangler_env pnpm --dir "$ROOT/workers/$pkg" exec wrangler "$@"; }
 
 if [ "$DRY" = "--dry-run" ]; then
   out="$ROOT/.wrangler/dry-run/$ENV_NAME"

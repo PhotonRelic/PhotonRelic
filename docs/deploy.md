@@ -31,20 +31,23 @@ Do these once in the Cloudflare dashboard. Each is a product switch, not a confi
 | **Images** enabled | Images → Overview | The transformations the resizer uses. Without it every image is served as stored and the resizer says so in a header. |
 | **Zero Trust** enabled | Zero Trust → choose the Free plan | Access is part of Zero Trust. You pick a team name, which becomes `<team>.cloudflareaccess.com`, the login page's address. The provisioning script can create this for you if you prefer (`ACCESS_TEAM_NAME`). |
 
-On your machine: Node 22.13 or later, pnpm 9 or later (`npm install -g pnpm@12`; on Node 22 to 24, `corepack enable` also works), git, and curl.
+On your machine: Node 22.13 or later, pnpm 10 or later (`npm install -g pnpm@12`; on Node 22 to 24, `corepack enable` also works), git, and curl 7.55 or later. pnpm 10 is the floor because it enforces the list of dependencies allowed to run install scripts.
 
 ## The installer
 
-Every [release](https://github.com/PhotonRelic/PhotonRelic/releases) attaches `install.sh`. Download it and run it:
+Every [release](https://github.com/PhotonRelic/PhotonRelic/releases) attaches `install.sh`, and its notes end with the file's SHA-256 and the tagged commit. Download it, check it, and run it:
 
 ```sh
 curl -fsSLO https://github.com/PhotonRelic/PhotonRelic/releases/latest/download/install.sh
+shasum -a 256 install.sh        # compare with the release notes (sha256sum on Linux)
 sh install.sh
 ```
 
+To pin the install to the exact code the notes describe, so that a tag moved under you could not change what runs, add `--version vX.Y.Z --commit <the tagged commit from the notes>`; the installer stops if the checkout does not match.
+
 It asks for an environment name, the two hostnames, your account ID, the email domains staff sign in with, and the deploy token (typed without echo, or taken from `CLOUDFLARE_API_TOKEN` in your environment; the [Tokens](#tokens) section says what the token needs). Then it creates the deployment repository in `./photonrelic-deploy`, pinned to the newest release, installs its dependencies, runs preflight, shows what it is about to create and asks once, then provisions, deploys and verifies. When something fails it stops, shows the failure with its fix, and prints the one command that continues from there; running the installer again with the same answers also continues.
 
-Every question has an option, so the whole thing can run without prompts: `--dir`, `--name`, `--library-host`, `--resizer-host`, `--account-id`, `--email-domains`, `--team-name`, `--yes`. `--dry-run` stops after preflight and creates nothing in the account; `--version v1.2.0` installs that release instead of the newest; `--source <url>` installs from your fork or mirror. `sh install.sh --help` lists them.
+Every question has an option, so the whole thing can run without prompts: `--dir`, `--name`, `--library-host`, `--resizer-host`, `--account-id`, `--email-domains`, `--team-name`, `--yes`. `--dry-run` stops after preflight and creates nothing in the account; `--version v1.2.0` installs that release instead of the newest; `--commit <sha>` requires it to be that exact commit; `--source <url>` installs from your fork or mirror over `https://`, `ssh://` or `git@host:`, never a plaintext scheme. `sh install.sh --help` lists them.
 
 When it finishes, sign in at the library's address, upload a folder, and commit the deployment repository (it tells you how). The sections from [Create the deployment repository](#create-the-deployment-repository) to [Verify](#verify) are what it just did, one step at a time.
 
@@ -97,13 +100,15 @@ Create a private repository on GitHub for it and push, when you are ready. Nothi
 
 ## Tokens
 
-Tokens are created at **My Profile → API Tokens → Create Token → Create Custom Token**, or under the account's **Manage Account → Account API Tokens**. Copy each one into `.env` as you make it; the dashboard shows a token once.
+Tokens are created at **My Profile → API Tokens → Create Token → Create Custom Token**, or under the account's **Manage Account → Account API Tokens**. Copy each one into `.env` as you make it; the dashboard shows a token once. Create the file readable by you alone:
 
 ```sh
-cp .env.example .env
+(umask 077; cp .env.example .env)
 ```
 
-**The deploy token** (`CLOUDFLARE_API_TOKEN`), one token with these permissions and nothing more:
+Preflight fails when `.env` is readable by other users on the machine. The scripts read it line by line and never execute it, and they keep its values out of the environment of everything they run except wrangler, which gets the deploy token and the account ID and nothing else.
+
+**The deploy token** (`CLOUDFLARE_API_TOKEN`), one token with these permissions and nothing more. Its account permissions cover every Worker, bucket, database and Access application in the account, which is what deploying needs; its zone permissions cover only the zone your hostnames are in:
 
 | Scope | Permission | Used for |
 | --- | --- | --- |
@@ -129,22 +134,22 @@ Also in `.env`: `CLOUDFLARE_ACCOUNT_ID`, and `ACCESS_ALLOWED_EMAIL_DOMAINS`, the
 
 ### Or let the installer mint them
 
-Instead of building the deploy token and the optional ones by hand, you can create a single **bootstrap token** and let the scripts create the rest through the API, each named `photonrelic-<env>-<purpose>` and scoped to the one thing it does.
+Instead of building the deploy token and the optional ones by hand, you can create a single **bootstrap token** and let the scripts create the rest through the API, each named `photonrelic-<env>-<purpose>`: the deploy token with the account permissions above and zone permissions on your hostnames' zones only, and the optional tokens each scoped to its one job.
 
-The bootstrap token has one permission, **Account → Account API Tokens → Edit**, on your one account (a user token made from the **Create additional tokens** template works too). Give it an expiry of a day and your IP address under Client IP Address Filtering. The script needs no zone permission on it: the deploy token it mints starts with every zone in the account, looks up the zones of your two hostnames with its own permissions, and is then narrowed to those. Then, in the shell you run the installer from:
-
-```sh
-export CLOUDFLARE_BOOTSTRAP_TOKEN=…     # pasted from the dashboard; never goes into a file
-sh install.sh --usage --purge --masters --retire-bootstrap
-```
-
-The installer mints the deploy token before preflight, the usage and purge tokens with it, the R2 key pair after provisioning has created the bucket (`--masters`), and sets `CF_ZONE_ID` for the purge. The same thing on an existing deployment repository, for one token at a time:
+The bootstrap token has one permission, **Account → Account API Tokens → Edit**, on your one account (a user token made from the **Create additional tokens** template works too). Give it an expiry of a day and your IP address under Client IP Address Filtering; the script warns when it has no expiry. It needs no zone permission: the deploy token it mints starts with every zone in the account, looks up the zones of your two hostnames with its own permissions, and is narrowed to those before it is written anywhere. If that narrowing cannot be done, the new token is deleted and nothing is written. Then:
 
 ```sh
-CLOUDFLARE_BOOTSTRAP_TOKEN=… sh photonrelic/scripts/mint-tokens.sh environments/production --purge
+sh install.sh --mint --usage --purge --masters --retire-bootstrap
 ```
 
-A variable already set in `.env` is left alone. Be clear about what the bootstrap token is: a token that can create tokens can create one with any permission in the account, so it is as powerful as the account itself while it exists. The short expiry, the IP filter and deleting it afterwards are what make it a reasonable thing to hand to a script or an agent. Everything it created is listed under **Manage Account → Account API Tokens**.
+The installer asks for the bootstrap token at a hidden prompt, keeps it in its own memory, and hands it only to the two minting steps; no other process it runs can see it, and it never goes into a file or your shell history. To run without a prompt (for an agent, or a script), put it in the environment with `read -rs CLOUDFLARE_BOOTSTRAP_TOKEN && export CLOUDFLARE_BOOTSTRAP_TOKEN` and paste it at the silent prompt; an `export CLOUDFLARE_BOOTSTRAP_TOKEN=…` line would land in your shell history. The installer mints the deploy token before preflight, the usage and purge tokens with it, the R2 key pair after provisioning has created the bucket (`--masters`), and sets `CF_ZONE_ID` for the purge. The same thing on an existing deployment repository, for one token at a time:
+
+```sh
+read -rs CLOUDFLARE_BOOTSTRAP_TOKEN && export CLOUDFLARE_BOOTSTRAP_TOKEN
+sh photonrelic/scripts/mint-tokens.sh environments/production --purge
+```
+
+A variable already set in `.env` is left alone, except that an existing deploy token is checked: if it still covers every zone in the account, the script stops and tells you to delete it and mint again. Be clear about what the bootstrap token is: a token that can create tokens can create one with any permission in the account, so it is as powerful as the account itself while it exists. The short expiry, the IP filter and deleting it afterwards are what make it a reasonable thing to hand to a script or an agent. Everything it created is listed under **Manage Account → Account API Tokens**.
 
 **Delete the bootstrap token when the installation is done.** `--retire-bootstrap` does it for you at the end of a successful install; the script also deletes it on `sh photonrelic/scripts/mint-tokens.sh environments/production --retire-bootstrap`. If the install stopped partway, or you ran without the flag, the installer says so and prints that command. Until it is gone, anyone with the token can mint one with any permission in your account; a day's expiry is the backstop, not the plan.
 

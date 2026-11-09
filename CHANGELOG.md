@@ -10,11 +10,26 @@ Within a version, **Operators must do** comes first whenever there is something 
 
 - Migration 0009 runs on deploy: two small tables, for master uploads in flight and for the library's own locks. Nothing to configure.
 - Local development now needs `DEV_IDENTITY` in `workers/library/.dev.vars` (copy `.dev.vars.example`); the library no longer runs without Access on the strength of `ENVIRONMENT = "local"` alone.
+- pnpm 10 or later is now required on the machine that deploys (`npm install -g pnpm@12`). It enforces the list of dependencies allowed to run install scripts, which pnpm 9 did not.
+- `.env` must be readable by you alone; preflight fails otherwise. `chmod 600 .env` fixes an existing file.
+- A deploy token minted by an earlier version of `mint-tokens.sh` may still cover every zone in the account. Run `mint-tokens.sh environments/<env> --deploy` once: it reads the token's scope and tells you if it must be replaced.
 
 ### Added
 
 - `scripts/mint-tokens.sh`: creates the deployment's API tokens from one bootstrap token (Account API Tokens Edit, nothing else), each named `photonrelic-<env>-<purpose>` and scoped to one job: the deploy token, and optionally the usage token, the cache purge token (with `CF_ZONE_ID` set) and the R2 key pair for masters on the one bucket. Written to `.env`, never printed. `--retire-bootstrap` deletes the bootstrap token afterwards; without it, both scripts end by saying the bootstrap token is still valid and how to delete it.
 - `install.sh` uses it when `CLOUDFLARE_BOOTSTRAP_TOKEN` is in the environment: `--usage`, `--purge`, `--masters` and `--retire-bootstrap` make a whole installation, tokens included, one command. `AGENTS.md` and `docs/deploy.md` describe the path and what the bootstrap token is.
+- `install.sh --mint` asks for the bootstrap token at a hidden prompt, so it never has to be in the environment or the shell history. `--commit <sha>` makes the installer, and `init-deploy-repo.sh`, refuse a checkout that is not that exact commit; each release's notes now end with the tagged commit and the installer's SHA-256.
+- Release tags must be signed by a key listed in `.github/allowed_signers`; the release workflow verifies the signature, and never replaces a published `install.sh`.
+- `pnpm-workspace.yaml` sets `minimumReleaseAge` to one day, so a dependency version must have been public for a day before pnpm installs it.
+
+### Fixed
+
+- `mint-tokens.sh` narrows the deploy token to the hostnames' zones before writing it to `.env`; if the zones cannot be found or the narrowing fails, the new token is deleted and nothing is written. Before, a token with DNS and Workers Routes on every zone in the account could be left in `.env` with only a note. On a re-run it reads the existing token's scope and refuses to continue with one that is still account-wide.
+- The scripts no longer export the contents of `.env` into every process they run. The file is read line by line, never executed, and only wrangler receives the deploy token and account ID. The bootstrap token is removed from the environment at once and handed only to the minting steps.
+- API tokens travel to curl on its standard input, not its command line, so they do not appear in the process list on shared machines.
+- `provision.sh` validates the email domains, the team name, the environment name, the hostname and the bucket and database names before building API requests, and escapes values returned by the API before writing them into the TOML files. `install.sh` and `init-deploy-repo.sh` accept only well-formed hostnames and only `https://`, `ssh://`, `git@host:` or local sources.
+- `deploy.sh` and preflight refuse a `library.toml` that sets `ENVIRONMENT = "local"` or has no `ACCESS_AUD` line, the two configurations that would deploy the library without a login. `deploy.sh` rejects any option other than `--dry-run` instead of treating a typo as a real deploy.
+- `upgrade.sh` strips escape characters from the changelog it shows and fetches only from `https://`, `ssh://`, `git@host:` or local remotes.
 
 ### Fixed
 

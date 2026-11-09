@@ -1,19 +1,20 @@
 # Publishes a GitHub Release when a maintainer pushes a signed tag v*. It
-# re-runs the checks on the tagged commit, confirms that the tag, every
-# package.json and CHANGELOG.md agree (scripts/release-check.sh), then creates
-# the release with that changelog section as its notes and scripts/install.sh
-# attached. The default workflow token is enough: it needs contents: write to
-# create a release, and nothing here deploys or reads account secrets. gh is
-# preinstalled on the runner, so no third-party action is needed and the
-# repository's Actions policy stays at GitHub-owned and verified creators.
+# re-runs the checks on the tagged commit, confirms that the tag is signed by
+# a key in .github/allowed_signers and that the tag, every package.json and
+# CHANGELOG.md agree (scripts/release-check.sh), then creates the release with
+# that changelog section as its notes and scripts/install.sh attached. The
+# notes end with the tagged commit and the installer's SHA-256, so an operator
+# can check what they downloaded. A re-run never replaces a published
+# installer: if the asset differs from the tree, the run fails. The default
+# workflow token is enough: the job needs contents: write to create a release,
+# and nothing here deploys or reads account secrets. gh is preinstalled on the
+# runner, so no third-party action is needed and the repository's Actions
+# policy stays at GitHub-owned and verified creators.
 name: Release
 
 on:
   push:
     tags: ['v*']
-
-permissions:
-  contents: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -23,6 +24,8 @@ jobs:
     name: Check and publish
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -49,13 +52,24 @@ jobs:
           TAG: ${{ github.ref_name }}
           VERSION: ${{ steps.check.outputs.version }}
           PRERELEASE: ${{ steps.check.outputs.prerelease }}
+          SHA256: ${{ steps.check.outputs.sha256 }}
           NOTES: ${{ steps.check.outputs.notes }}
-        # A re-run after a transient failure updates the release it already
-        # made instead of failing on it.
+        # A re-run after a transient failure updates the notes of the release
+        # it already made. The installer asset is published once: a different
+        # file under the same tag fails the run instead of replacing it.
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
+            tmp=$(mktemp -d)
+            if gh release download "$TAG" --pattern install.sh --dir "$tmp" 2>/dev/null; then
+              have=$(sha256sum "$tmp/install.sh" | cut -d' ' -f1)
+              if [ "$have" != "$SHA256" ]; then
+                echo "::error::the published install.sh ($have) differs from the one in the tree ($SHA256). A release's installer is never replaced; publish a new version instead."
+                exit 1
+              fi
+            else
+              gh release upload "$TAG" scripts/install.sh
+            fi
             gh release edit "$TAG" --title "PhotonRelic $VERSION" --notes-file "$NOTES"
-            gh release upload "$TAG" scripts/install.sh --clobber
           else
             set -- --verify-tag --title "PhotonRelic $VERSION" --notes-file "$NOTES"
             [ "$PRERELEASE" != true ] || set -- "$@" --prerelease

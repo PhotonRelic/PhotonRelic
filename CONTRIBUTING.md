@@ -14,8 +14,10 @@ is small; when in doubt, open an issue and ask.
 
 ## Working on it
 
-You need Node 22.13 or later and pnpm 9 or later (`npm install -g pnpm@12`;
-pnpm then switches itself to the version `package.json` names).
+You need Node 22.13 or later and pnpm 10 or later (`npm install -g pnpm@12`;
+pnpm then switches itself to the version `package.json` names). pnpm 10 is
+the floor because it enforces the list of dependencies allowed to run install
+scripts, and a version must be a day old before pnpm will install it.
 
 ```sh
 pnpm install
@@ -68,9 +70,13 @@ release is the unit operators trust; `master` between releases is not.
    pushes a `release/vX.Y.Z` branch. Open it as a pull request titled
    `Release vX.Y.Z` and merge it like any other.
 2. `sh scripts/release.sh tag X.Y.Z-rc.1` on the squash commit. The release
-   workflow re-runs the checks, verifies that the tag, the version fields and
-   the changelog agree (`scripts/release-check.sh`), and publishes a
-   pre-release. Deploy it to your own environment and use it.
+   workflow re-runs the checks, verifies that the tag is signed by a key in
+   `.github/allowed_signers` and that the tag, the version fields and the
+   changelog agree (`scripts/release-check.sh`), and publishes a pre-release
+   whose notes end with the tagged commit and the installer's SHA-256. Deploy
+   it to your own environment and use it. A new maintainer's SSH signing
+   public key is added to `.github/allowed_signers` by pull request before
+   they can release.
 3. `sh scripts/release.sh tag X.Y.Z` on the same commit, or on the squash
    commit of a fix. The workflow publishes it as the latest release.
 
