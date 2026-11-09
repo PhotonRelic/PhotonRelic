@@ -40,11 +40,11 @@ set -eu
 UPSTREAM="https://github.com/PhotonRelic/PhotonRelic.git"
 DIR=""; NAME=""; LIB_HOST=""; RES_HOST=""; ACCOUNT_ID=""; EMAIL_DOMAINS=""; TEAM_NAME=""
 VERSION=""; SOURCE=""; YES=false; DRY_RUN=false; TMP=""; ECHO_OFF=false
-USAGE=false; PURGE=false; MASTERS=false; RETIRE=false; MINT=false
+USAGE=false; PURGE=false; MASTERS=false; RETIRE=false; MINT=false; BOOTSTRAP_RETIRED=false
 
 usage() { sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 say() { printf '%s\n' "$*"; }
-die() { printf 'install: %s\n' "$*" >&2; exit 1; }
+die() { printf 'install: %s\n' "$*" >&2; bootstrap_reminder; exit 1; }
 cleanup() {
   [ "$ECHO_OFF" = false ] || ( stty echo </dev/tty ) 2>/dev/null || true
   [ -z "$TMP" ] || rm -rf "$TMP"
@@ -106,8 +106,17 @@ run_step() {
     say "install: $title failed. Fix what it reported, then continue with:"
     say "  cd $DIR && $resume"
     say "Running the installer again with the same options also continues from here."
+    bootstrap_reminder
     exit 1
   fi
+}
+# bootstrap_reminder -> the bootstrap token can mint anything; never let it be forgotten
+bootstrap_reminder() {
+  [ "$MINT" = true ] && [ "$BOOTSTRAP_RETIRED" = false ] || return 0
+  say ""
+  say "The bootstrap token is still valid and can create any token in the account. When you are done with it:"
+  say "  CLOUDFLARE_BOOTSTRAP_TOKEN=… sh photonrelic/scripts/mint-tokens.sh environments/${NAME:-<env>} --retire-bootstrap"
+  say "or delete it where you created it (Manage Account → Account API Tokens, or My Profile → API Tokens)."
 }
 # latest_stable_tag REPO  -> the newest vX.Y.Z tag, skipping release candidates (same as lib.sh)
 latest_stable_tag() {
@@ -262,6 +271,7 @@ if [ "$DRY_RUN" = true ]; then
   if [ "$MINT" = true ]; then say "dry run: nothing was created in the account except the tokens, now in .env. To continue, in $DIR:"
   else say "dry run: nothing was created in the account. To continue, in $DIR:"; fi
   say "  pnpm run provision $NAME && pnpm run check && pnpm run deploy $NAME && pnpm run verify $NAME"
+  bootstrap_reminder
   exit 0
 fi
 
@@ -294,7 +304,8 @@ fi
 
 if [ "$MINT" = true ] && [ "$RETIRE" = true ]; then
   say ""
-  sh photonrelic/scripts/mint-tokens.sh "environments/$NAME" --retire-bootstrap || say "install: the bootstrap token could not be deleted; delete it in the dashboard"
+  if sh photonrelic/scripts/mint-tokens.sh "environments/$NAME" --retire-bootstrap | grep -q '^   deleted'; then BOOTSTRAP_RETIRED=true
+  else say "install: the bootstrap token could not be deleted"; fi
 fi
 
 say ""
@@ -302,3 +313,4 @@ say "installed. Sign in at https://$LIB_HOST/ with an address on $EMAIL_DOMAINS 
 say "Then commit the deployment repository and push it somewhere private:"
 say "  cd $DIR && git add -A && git commit -m \"$NAME: PhotonRelic deployed\""
 say "After the first upload: pnpm run verify $NAME --key <a filed key> confirms resizing."
+bootstrap_reminder

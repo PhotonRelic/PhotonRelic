@@ -233,3 +233,7 @@ case "$MINTED_KIND" in
   account) echo "done. The tokens are listed under Manage Account → Account API Tokens as photonrelic-$ENVNAME-*; .env is mode 600 and never committed." ;;
   *) echo "done. The tokens are user-owned (the bootstrap token could not create account tokens) and listed under My Profile → API Tokens as photonrelic-$ENVNAME-*; they stop working if that user leaves the account. .env is mode 600 and never committed." ;;
 esac
+if ! $RETIRE; then
+  case "$SELF_KIND" in account) where="Manage Account → Account API Tokens" ;; *) where="My Profile → API Tokens" ;; esac
+  echo "The bootstrap token is still valid and can create any token in the account. When you are done with it, run this script with --retire-bootstrap, or delete it under $where."
+fi

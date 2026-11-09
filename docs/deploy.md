@@ -138,13 +138,15 @@ export CLOUDFLARE_BOOTSTRAP_TOKEN=…     # pasted from the dashboard; never goe
 sh install.sh --usage --purge --masters --retire-bootstrap
 ```
 
-The installer mints the deploy token before preflight, the usage and purge tokens with it, the R2 key pair after provisioning has created the bucket (`--masters`), and sets `CF_ZONE_ID` for the purge. `--retire-bootstrap` deletes the bootstrap token when the install has verified. The same thing on an existing deployment repository, for one token at a time:
+The installer mints the deploy token before preflight, the usage and purge tokens with it, the R2 key pair after provisioning has created the bucket (`--masters`), and sets `CF_ZONE_ID` for the purge. The same thing on an existing deployment repository, for one token at a time:
 
 ```sh
 CLOUDFLARE_BOOTSTRAP_TOKEN=… sh photonrelic/scripts/mint-tokens.sh environments/production --purge
 ```
 
-A variable already set in `.env` is left alone. Be clear about what the bootstrap token is: a token that can create tokens can create one with any permission in the account, so it is as powerful as the account itself while it exists. The short expiry, the IP filter and retiring it afterwards are what make it a reasonable thing to hand to a script or an agent. Everything it created is listed under **Manage Account → Account API Tokens**.
+A variable already set in `.env` is left alone. Be clear about what the bootstrap token is: a token that can create tokens can create one with any permission in the account, so it is as powerful as the account itself while it exists. The short expiry, the IP filter and deleting it afterwards are what make it a reasonable thing to hand to a script or an agent. Everything it created is listed under **Manage Account → Account API Tokens**.
+
+**Delete the bootstrap token when the installation is done.** `--retire-bootstrap` does it for you at the end of a successful install; the script also deletes it on `sh photonrelic/scripts/mint-tokens.sh environments/production --retire-bootstrap`. If the install stopped partway, or you ran without the flag, the installer says so and prints that command. Until it is gone, anyone with the token can mint one with any permission in your account; a day's expiry is the backstop, not the plan.
 
 ## Preflight
 
