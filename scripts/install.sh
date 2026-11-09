@@ -26,11 +26,13 @@
 # The deploy token is read from CLOUDFLARE_API_TOKEN or asked for at a hidden
 # prompt, written to <dir>/.env (never committed) and never printed.
 #
-# Or let the installer mint the tokens. Give it one bootstrap token (Account →
-# Account API Tokens → Edit on the one account, nothing else), at a hidden
-# prompt or in CLOUDFLARE_BOOTSTRAP_TOKEN, and it creates the deploy token
+# Or let the installer mint the tokens. Give it one bootstrap token, created
+# under Manage Account → Account API Tokens with the single permission Account
+# → Account API Tokens → Edit on the one account and a day's expiry, at a
+# hidden prompt or in CLOUDFLARE_BOOTSTRAP_TOKEN. It creates the deploy token
 # itself, narrowed to your hostnames' zones, plus whichever optional ones you
-# ask for. The bootstrap token is kept out of every other process this runs.
+# ask for. A token made under My Profile is refused. The bootstrap token is
+# kept out of every other process this runs.
 #
 #   --mint                  mint the deploy token from a bootstrap token
 #   --usage                 also a token for usage counts
@@ -50,7 +52,7 @@ USAGE=false; PURGE=false; MASTERS=false; RETIRE=false; MINT=false; BOOTSTRAP_RET
 BOOT=${CLOUDFLARE_BOOTSTRAP_TOKEN:-}
 unset CLOUDFLARE_BOOTSTRAP_TOKEN
 
-usage() { sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 say() { printf '%s\n' "$*"; }
 die() { printf 'install: %s\n' "$*" >&2; command -v bootstrap_reminder >/dev/null 2>&1 && bootstrap_reminder; exit 1; }
 cleanup() {
@@ -125,7 +127,7 @@ bootstrap_reminder() {
   say "The bootstrap token is still valid and can create any token in the account. When you are done with it, in ${DIR:-the deployment repository}:"
   say "  read -rs CLOUDFLARE_BOOTSTRAP_TOKEN && export CLOUDFLARE_BOOTSTRAP_TOKEN && sh photonrelic/scripts/mint-tokens.sh environments/${NAME:-<env>} --retire-bootstrap"
   say "(the token is typed without echo and stays out of your shell history), or delete it where you created it"
-  say "(Manage Account → Account API Tokens, or My Profile → API Tokens)."
+  say "(Manage Account → Account API Tokens)."
 }
 # mint_step ARGS... -> runs mint-tokens.sh with the bootstrap token in its environment alone
 mint_step() { CLOUDFLARE_BOOTSTRAP_TOKEN="$BOOT" sh photonrelic/scripts/mint-tokens.sh "$@"; }
