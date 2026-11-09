@@ -2,6 +2,8 @@
 
 This guide takes you from a Cloudflare account to a working library and image origin, with nothing assumed beyond knowing your way around a terminal. It is written for a person; an agent working for you follows the same steps through [`AGENTS.md`](../AGENTS.md). Every command here is run as written; nothing is paraphrased.
 
+The short way is [the installer](#the-installer): the prerequisites, then one command. The sections after it are the same work step by step, for when you want to see each piece or something needs a hand, and then what comes after: staff, a second environment, upgrading, troubleshooting.
+
 ## What you are deploying
 
 Two Workers, one bucket, one database, one login:
@@ -31,13 +33,28 @@ Do these once in the Cloudflare dashboard. Each is a product switch, not a confi
 
 On your machine: Node 22.13 or later, pnpm 9 or later (`npm install -g pnpm@12`; on Node 22 to 24, `corepack enable` also works), git, and curl.
 
+## The installer
+
+Every [release](https://github.com/PhotonRelic/PhotonRelic/releases) attaches `install.sh`. Download it and run it:
+
+```sh
+curl -fsSLO https://github.com/PhotonRelic/PhotonRelic/releases/latest/download/install.sh
+sh install.sh
+```
+
+It asks for an environment name, the two hostnames, your account ID, the email domains staff sign in with, and the deploy token (typed without echo, or taken from `CLOUDFLARE_API_TOKEN` in your environment; the [Tokens](#tokens) section says what the token needs). Then it creates the deployment repository in `./photonrelic-deploy`, pinned to the newest release, installs its dependencies, runs preflight, shows what it is about to create and asks once, then provisions, deploys and verifies. When something fails it stops, shows the failure with its fix, and prints the one command that continues from there; running the installer again with the same answers also continues.
+
+Every question has an option, so the whole thing can run without prompts: `--dir`, `--name`, `--library-host`, `--resizer-host`, `--account-id`, `--email-domains`, `--team-name`, `--yes`. `--dry-run` stops after preflight and creates nothing in the account; `--version v1.2.0` installs that release instead of the newest; `--source <url>` installs from your fork or mirror. `sh install.sh --help` lists them.
+
+When it finishes, sign in at the library's address, upload a folder, and commit the deployment repository (it tells you how). The sections from [Create the deployment repository](#create-the-deployment-repository) to [Verify](#verify) are what it just did, one step at a time.
+
 ## Where your copy of the code lives
 
-The deployment repository you are about to create points at PhotonRelic as a git submodule. Decide which repository that is:
+The deployment repository points at PhotonRelic as a git submodule, pinned to a release. The default is right for almost everyone:
 
-- **The public project** (`https://github.com/PhotonRelic/PhotonRelic.git`). Simplest. Nothing to maintain. Right when you will not change the code and are content to track the project.
-- **Your GitHub fork.** Recommended for a team that might change anything. Fork on GitHub, point the submodule at the fork, and keep it current with GitHub's **Sync fork** button or `git fetch upstream && git merge --ff-only upstream/master`. Changes you make go on a branch in the fork and come back to the project as a pull request. A fork of a public repository is public by GitHub's rules; that is fine, because your deployment configuration never goes in it.
-- **A private mirror.** Only when your organization forbids public repositories. Create an empty private repository, push the project's `master` into it, never commit to it, and fast-forward it from the project when you upgrade. Nothing flows back to the project except by hand; that is the price of the rule.
+- **The public project** (`https://github.com/PhotonRelic/PhotonRelic.git`), pinned to a release tag. Nothing to maintain, upgrades are one command, and nothing changes until you run it. Your deployment does not depend on this repository being reachable: the Workers run in your account, and your checkout holds the code. The release's source archive is a complete copy you can keep.
+- **Your GitHub fork.** When your team will change the code, or wants a copy GitHub keeps for them if the project ever disappears. Fork on GitHub, pass `--source` with the fork's URL, and keep it current with GitHub's **Sync fork** button or `git fetch upstream && git merge --ff-only upstream/master`. Sync moves branches only; fetch the project's tags too (`git fetch upstream --tags && git push origin --tags`) so releases are visible in the fork. Changes you make go on a branch and come back to the project as a pull request. A fork of a public repository is public by GitHub's rules and cannot be made private; that is fine, because your deployment configuration never goes in it.
+- **A private mirror.** When your organization forbids public repositories, or wants a private copy as insurance. Create an empty private repository, push the project's `master` and its tags into it, never commit to it, and fast-forward it from the project when you upgrade. Nothing flows back to the project except by hand.
 
 Whichever you choose, the deployment repository itself is **private**: the ids and hostnames the provisioning script writes into it belong to your account.
 
@@ -52,14 +69,14 @@ sh scripts/init-deploy-repo.sh ../my-photonrelic-deploy \
   --resizer-host img.example.com
 ```
 
-Add `--source <git url>` for a fork or mirror; the default is the public project. The result is a new git repository, staged and not committed, holding:
+Add `--source <git url>` for a fork or mirror; the default is the public project. The submodule is pinned to the newest release at the source; `--ref v1.2.0` pins another, and `--ref <commit>` a commit. The result is a new git repository, staged and not committed, holding:
 
 ```
-photonrelic/                       PhotonRelic as a submodule, pinned to a commit
+photonrelic/                       PhotonRelic as a submodule, pinned to a release
 environments/production/library.toml   the library Worker's configuration, names filled in
 environments/production/resizer.toml   the resizer Worker's configuration
-scripts/{preflight,provision,deploy,verify}.sh   wrappers that call PhotonRelic's scripts
-package.json                       pnpm run setup / check / preflight / provision / deploy / verify
+scripts/{preflight,provision,deploy,verify,upgrade}.sh   wrappers that call PhotonRelic's scripts
+package.json                       pnpm run setup / check / preflight / provision / deploy / verify / upgrade-photonrelic
 .env.example                       the credentials file to copy
 README.md                          these steps, for this repository
 ```
@@ -163,16 +180,18 @@ In the deployment repository, copy `environments/production/` to `environments/s
 
 ## Upgrading PhotonRelic
 
+Nothing changes until you run this. Releases are tags `vX.Y.Z`; each one's notes, in [`CHANGELOG.md`](../CHANGELOG.md) and on its release page, say what changed and, first, what an operator must do.
+
 ```sh
-git -C photonrelic fetch origin
-git -C photonrelic log --oneline HEAD..origin/master      # what is new
-git -C photonrelic checkout <commit>
-pnpm run setup && pnpm run check
-pnpm run deploy production && pnpm run verify production
-git add photonrelic && git commit -m "production: PhotonRelic <commit>"
+pnpm run upgrade-photonrelic production            # to the newest release
+pnpm run upgrade-photonrelic production v1.2.0     # to a particular one
 ```
 
-Read the commits between the two for anything that asks for a new variable or binding; add it to your `environments/` files before deploying. Migrations are applied by the deploy, in order, and are never edited after they ship, so a database is always upgradable forward. For a fork, fetch from the project first and fast-forward the fork; for a mirror, push the project's `master` into the mirror first.
+It fetches the tags, shows the changelog sections between your pin and the target, and asks. Read **Operators must do** before saying yes; a new variable or binding goes into your `environments/` files first. Then it moves the submodule to the release, installs, builds, deploys, verifies and commits the pin. If the deploy fails it tells you how to finish or how to go back. Migrations are applied by the deploy, in order, and are never edited after they ship, so a database is always upgradable forward; a downgrade is refused unless you pass `--allow-downgrade`, and the database keeps every migration already applied.
+
+Version numbers from your side: a **major** version means you must do something (the notes say what), a **minor** one adds features, a **patch** fixes. A release candidate (`v1.2.0-rc.1`) is published as a pre-release, never becomes the newest release, and is skipped unless you name it; it is how maintainers deploy a version before anyone else does.
+
+For a fork or mirror, the upgrade needs the project's tags in it: `git fetch https://github.com/PhotonRelic/PhotonRelic.git --tags && git push <your remote> --tags`, then fast-forward its `master`. A deployment repository created before releases existed is pinned to a commit and has no `upgrade` wrapper; run `sh photonrelic/scripts/upgrade.sh environments/production` once (after moving the submodule to any release that has it), and the next scaffold has the wrapper.
 
 ## Troubleshooting
 
@@ -188,6 +207,9 @@ Read the commits between the two for anything that asks for a new variable or bi
 | Replace says the same bytes are already at this key | The new file is identical to the stored one | Nothing to do; upload a different file or leave it. |
 | Nothing answers at a hostname right after the first deploy | The custom domain's DNS record is still propagating | Wait a minute and verify again. |
 | The library shows "not configured" for usage or masters | The optional token is not in `.env` | Add it and run `pnpm run deploy <env>`; the deploy stores it. |
+| The installer stopped partway | One step failed; it printed the failure and the command that continues | Fix what it reported, then run that command, or run the installer again with the same answers. Provisioning is idempotent. |
+| Upgrade: `no release tags` | A fork or mirror without the project's tags | `git fetch https://github.com/PhotonRelic/PhotonRelic.git --tags && git push <your remote> --tags`. |
+| Upgrade: `is older than the current pin` | The target is a release behind the one deployed | Pick a newer release, or pass `--allow-downgrade` knowing migrations stay applied. |
 
 ## What it costs
 

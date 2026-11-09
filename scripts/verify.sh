@@ -17,10 +17,6 @@ KEY=""
 [ "${2:-}" != "--key" ] || KEY="${3:?--key needs a key}"
 LIB="$ENV_DIR/library.toml"
 RES="$ENV_DIR/resizer.toml"
-PASS=0; FAILS=0
-pass() { PASS=$((PASS + 1)); printf 'pass  %s\n' "$1"; }
-fail() { FAILS=$((FAILS + 1)); printf 'FAIL  %s\n      fix: %s\n' "$1" "$2"; }
-note() { printf 'note  %s\n' "$1"; }
 host_of() { sed -n 's/.*pattern = "\([^"]*\)".*/\1/p' "$1" | head -n 1; }
 # status URL [header...] -> HTTP status, or 000 when nothing answered
 status() { u=$1; shift; st=$(curl -s -o /dev/null -m 20 -w '%{http_code}' "$@" "$u" 2>/dev/null || true); printf '%s' "${st:-000}"; }

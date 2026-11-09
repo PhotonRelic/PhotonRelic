@@ -37,6 +37,10 @@ runs on every pull request.
   changed and why, not how you got there.
 - Keep the README and the configuration table in step with any new variable
   or behavior.
+- Add a line to `CHANGELOG.md` under `## [Unreleased]`, written for the
+  person running a deployment. If they must do something when they upgrade
+  (a new variable, a token, a dashboard switch), put it under
+  `### Operators must do`; a migration that runs is worth a line too.
 - CI must pass: lint, typecheck, tests. Pull requests from forks skip one
   internal check that maintainers run themselves.
 - Do not include deployment details (hostnames, account or database ids,
@@ -51,6 +55,31 @@ the pull request from that branch. Keep the fork current with GitHub's
 upstream/master` before you branch. A fork of a public repository is public,
 so your deployment configuration never goes in it: `docs/deploy.md` describes
 the private deployment repository that points at your fork as a submodule.
+
+## Releasing (maintainers)
+
+A release is a signed tag `vX.Y.Z` on `master`, a GitHub Release whose notes
+are that version's `CHANGELOG.md` section, and `scripts/install.sh` attached.
+Deployments pin a release and move only when their operator upgrades, so a
+release is the unit operators trust; `master` between releases is not.
+
+1. `sh scripts/release.sh prepare X.Y.Z` on an up-to-date `master`. It sets
+   the version in every `package.json`, dates the Unreleased section, and
+   pushes a `release/vX.Y.Z` branch. Open it as a pull request titled
+   `Release vX.Y.Z` and merge it like any other.
+2. `sh scripts/release.sh tag X.Y.Z-rc.1` on the squash commit. The release
+   workflow re-runs the checks, verifies that the tag, the version fields and
+   the changelog agree (`scripts/release-check.sh`), and publishes a
+   pre-release. Deploy it to your own environment and use it.
+3. `sh scripts/release.sh tag X.Y.Z` on the same commit, or on the squash
+   commit of a fix. The workflow publishes it as the latest release.
+
+Semantic versioning from the operator's side: a major version means they
+must act (a configuration or migration change that is not automatic), a
+minor one adds features, a patch fixes. A tag is never moved or deleted; a
+bad release is followed by a patch, and the bad one is marked as a
+pre-release so `latest` skips it. A tag ruleset on `v*` limits who can
+create one.
 
 ## License
 
