@@ -19,7 +19,7 @@ curl -fsSLO https://github.com/PhotonRelic/PhotonRelic/releases/latest/download/
 sh install.sh
 ```
 
-The installer asks for the two hostnames, your account ID, the email domains staff sign in with and the token (not echoed), then creates a private deployment repository in `./photonrelic-deploy` pinned to the newest [release](https://github.com/PhotonRelic/PhotonRelic/releases), checks the account before creating anything, provisions, deploys and verifies. It installs nothing on your machine; git, Node 22.13 or later and pnpm 9 or later must be there. Upgrading later is one command in that repository, and nothing changes until you run it. Every release is listed in [`CHANGELOG.md`](CHANGELOG.md) with what an operator must do.
+The installer asks for the two hostnames, your account ID, the email domains staff sign in with and the token (not echoed), then creates a private deployment repository in `./photonrelic-deploy` pinned to the newest [release](https://github.com/PhotonRelic/PhotonRelic/releases), checks the account before creating anything, provisions, deploys and verifies. Rather than build the deploy token's permissions by hand, you can hand it one short-lived bootstrap token that may create tokens, and it mints every token the deployment needs, each scoped to one job, and retires the bootstrap token when done ([Tokens](docs/deploy.md#or-let-the-installer-mint-them)). It installs nothing on your machine; git, Node 22.13 or later and pnpm 9 or later must be there. Upgrading later is one command in that repository, and nothing changes until you run it. Every release is listed in [`CHANGELOG.md`](CHANGELOG.md) with what an operator must do.
 
 It has two Workers. You can use either one on its own.
 
@@ -192,6 +192,7 @@ command. The scripts, in the order they are run:
 | --- | --- |
 | `install.sh [options]` | All of the below from one command, asking for what it needs; every answer has a flag. Attached to every release. |
 | `init-deploy-repo.sh <dir> --name <env> --library-host <h> --resizer-host <h> [--source <url>] [--ref <tag>]` | Creates the private deployment repository: submodule at the newest release, filled-in configuration, wrappers, README. |
+| `mint-tokens.sh deploy/<env> --deploy [--usage] [--purge] [--masters]` | With one bootstrap token in `CLOUDFLARE_BOOTSTRAP_TOKEN`, creates the deployment's tokens through the API, each named and scoped to one job, into `.env`. |
 | `preflight.sh deploy/<env>` | Checks the machine, the token's permissions, R2, Zero Trust, the hostnames' zones and the optional tokens. Creates nothing. |
 | `provision.sh deploy/<env>` | Creates the Access application, the bucket and its CORS rule, and the database; writes their ids into the configuration. Idempotent. |
 | `deploy.sh deploy/<env> [--dry-run]` | Applies migrations, deploys the resizer, then the library; stores the optional tokens from `.env` as secrets. |

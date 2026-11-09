@@ -6,6 +6,11 @@ Within a version, **Operators must do** comes first whenever there is something 
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/mint-tokens.sh`: creates the deployment's API tokens from one bootstrap token (Account API Tokens Edit, nothing else), each named `photonrelic-<env>-<purpose>` and scoped to one job: the deploy token, and optionally the usage token, the cache purge token (with `CF_ZONE_ID` set) and the R2 key pair for masters on the one bucket. Written to `.env`, never printed. `--retire-bootstrap` deletes the bootstrap token afterwards.
+- `install.sh` uses it when `CLOUDFLARE_BOOTSTRAP_TOKEN` is in the environment: `--usage`, `--purge`, `--masters` and `--retire-bootstrap` make a whole installation, tokens included, one command. `AGENTS.md` and `docs/deploy.md` describe the path and what the bootstrap token is.
+
 ## [1.0.0] - 2026-11-09
 
 The first release. Two Workers, one bucket, one database, one login: a public **resizer** that serves and resizes images from a fixed menu, and a private **library** behind Cloudflare Access where staff upload, describe and manage them. It needs a Cloudflare account on Workers Paid with R2, Images and Zero Trust enabled, and a domain whose DNS Cloudflare serves.
