@@ -259,7 +259,7 @@ else
     CLOUDFLARE_API_TOKEN=""
     if [ -z "$BOOT" ]; then
       have_tty || die "no terminal to ask for the bootstrap token: set CLOUDFLARE_BOOTSTRAP_TOKEN in the environment (read -rs CLOUDFLARE_BOOTSTRAP_TOKEN && export CLOUDFLARE_BOOTSTRAP_TOKEN keeps it out of your history)"
-      printf 'Bootstrap token (not shown; Account → Account API Tokens → Edit, nothing else): ' >/dev/tty
+      printf 'Bootstrap token (not shown; an account-owned token from Manage Account → Account API Tokens with Account API Tokens → Edit): ' >/dev/tty
       ECHO_OFF=true; stty -echo </dev/tty
       read -r BOOT </dev/tty || BOOT=""
       stty echo </dev/tty; ECHO_OFF=false

@@ -4,10 +4,11 @@
 # bootstrap token with the single permission Account → Account API Tokens →
 # Edit on the one account, passed in the environment as
 # CLOUDFLARE_BOOTSTRAP_TOKEN. That token is never written to a file by this
-# script. Create it under Manage Account → Account API Tokens: an account-owned
-# token can delete itself at the end (--retire-bootstrap). A user token (My
-# Profile → API Tokens) works for minting, but can delete itself only if it
-# also has User → API Tokens → Edit; otherwise you delete it in the dashboard.
+# script. Create it under Manage Account → Account API Tokens: only an
+# account-owned token is accepted, because only it can delete itself at the
+# end (--retire-bootstrap) and the tokens it mints then belong to the account.
+# A user token (My Profile → API Tokens) is refused: the script deletes it when
+# it can and asks you to make an account-owned one.
 #
 #   sh scripts/mint-tokens.sh deploy/<name> [--deploy] [--usage] [--purge] [--masters]
 #                                            [--all] [--expires <days>] [--retire-bootstrap]
@@ -80,15 +81,29 @@ env_note() { [ -f ./.env ] || ( umask 077; : > ./.env ); chmod 600 ./.env; print
 errors_of() { printf '%s' "$1" | json '(r.errors || []).map(e=>e.code+" "+e.message).join("; ") || "no detail"' 2>/dev/null || echo "no answer"; }
 
 echo "== Bootstrap token"
-# The bootstrap token may be account-owned or user-owned (made at My Profile);
-# that decides which endpoint deletes it later.
+# Only an account-owned bootstrap token (Manage Account → Account API Tokens) is
+# accepted: it can delete itself at the end, and the tokens it mints belong to
+# the account, not to a person who may leave. A user-owned token (My Profile)
+# is deleted on the spot when it can be, and the run stops either way.
 SELF_KIND=account
 v=$(cfb GET "/accounts/$A/tokens/verify")
-SELF_ID=$(printf '%s' "$v" | json '(r.success && r.result && r.result.status === "active" && r.result.id) || null' 2>/dev/null) \
-  || { SELF_KIND=user; v=$(cfb GET "/user/tokens/verify"); SELF_ID=$(printf '%s' "$v" | json '(r.success && r.result && r.result.status === "active" && r.result.id) || null' 2>/dev/null) || die "the bootstrap token did not verify: $(errors_of "$v")"; }
+if ! SELF_ID=$(printf '%s' "$v" | json '(r.success && r.result && r.result.status === "active" && r.result.id) || null' 2>/dev/null); then
+  u=$(cfb GET "/user/tokens/verify")
+  if uid=$(printf '%s' "$u" | json '(r.success && r.result && r.result.status === "active" && r.result.id) || null' 2>/dev/null); then
+    echo "   this bootstrap token is user-owned (made under My Profile → API Tokens)"
+    d=$(cfb DELETE "/user/tokens/$uid")
+    if printf '%s' "$d" | json 'r.success || null' >/dev/null 2>&1; then
+      echo "   deleted it"
+    else
+      echo "   it cannot delete itself ($(errors_of "$d")); delete it now under My Profile → API Tokens"
+    fi
+    die "create the bootstrap token under Manage Account → Account API Tokens (Account → Account API Tokens → Edit, one day's expiry) and run this again"
+  fi
+  die "the bootstrap token did not verify: $(errors_of "$v")"
+fi
 exp=$(printf '%s' "$v" | json '(r.result && r.result.expires_on) || null' 2>/dev/null || true)
-if [ -n "$exp" ]; then echo "   valid ($SELF_KIND-owned, expires $exp)"
-else echo "   valid ($SELF_KIND-owned)"; echo "   note: this bootstrap token has no expiry. A token that can create tokens should expire within a day; retire it when you are done (--retire-bootstrap)"; fi
+if [ -n "$exp" ]; then echo "   valid (account-owned, expires $exp)"
+else echo "   valid (account-owned)"; echo "   note: this bootstrap token has no expiry. A token that can create tokens should expire within a day; retire it when you are done (--retire-bootstrap)"; fi
 groups=$(cfb GET "/accounts/$A/tokens/permission_groups")
 printf '%s' "$groups" | json 'r.success || null' >/dev/null 2>&1 || die "the bootstrap token cannot list permission groups: it needs Account → Account API Tokens → Edit. $(errors_of "$groups")"
 # pg NAME SCOPE -> the permission group id for an API name at a scope. The same
