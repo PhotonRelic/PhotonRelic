@@ -34,6 +34,10 @@ SERVED_PREFIXES = "media/"
 # ALLOWED_ORIGINS = "www.example.com, example.com, *.example.com, media-admin.example.com"
 # With ALLOWED_ORIGINS, requests that carry no Origin or Referer (a direct link,
 # an email client, a privacy browser) are let through unless this is "false".
+# Note what that means: any page can send no Referer by adding
+# referrerpolicy="no-referrer" to its <img>, so with the default the allowlist
+# stops casual hotlinking, not a site that wants your images. Set it to "false"
+# to refuse referer-less requests, at the cost of direct links and email clients.
 # ALLOW_EMPTY_REFERER = "true"
 # The library's own host: its pages may still see a file whose rights have
 # expired, so the person renewing or retiring it knows what it is. Those
