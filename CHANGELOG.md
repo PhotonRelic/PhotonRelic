@@ -6,6 +6,8 @@ Within a version, **Operators must do** comes first whenever there is something 
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-09
+
 ### Operators must do
 
 - Migration 0009 runs on deploy: two small tables, for master uploads in flight and for the library's own locks. Nothing to configure.
@@ -30,8 +32,6 @@ Within a version, **Operators must do** comes first whenever there is something 
 - `provision.sh` validates the email domains, the team name, the environment name, the hostname and the bucket and database names before building API requests, and escapes values returned by the API before writing them into the TOML files. `install.sh` and `init-deploy-repo.sh` accept only well-formed hostnames and only `https://`, `ssh://`, `git@host:` or local sources.
 - `deploy.sh` and preflight refuse a `library.toml` that sets `ENVIRONMENT = "local"` or has no `ACCESS_AUD` line, the two configurations that would deploy the library without a login. `deploy.sh` rejects any option other than `--dry-run` instead of treating a typo as a real deploy.
 - `upgrade.sh` strips escape characters from the changelog it shows and fetches only from `https://`, `ssh://`, `git@host:` or local remotes.
-
-### Fixed
 
 - Completing a master upload acts only on an upload this library started: a completion whose declared size does not match removes the half-upload it created, writes an audit row (`library.master_removed`), and never touches a master already on file. Aborting a multipart upload needs the upload's own id and is audited (`library.master_aborted`). A plain master upload no longer writes over an unlinked object already at the master's key; Replace does.
 - The upload path verifies the bytes before storing them, as Replace already did: the declared SHA-256 must match, and the file must be the format its name says (a PNG under a `.jpg` key, or a file that is not a web image, is refused with 415). Two uploads racing for one new key cannot both win; the bucket write is conditional on the key being free.
