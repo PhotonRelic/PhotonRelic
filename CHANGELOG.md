@@ -33,8 +33,6 @@ Within a version, **Operators must do** comes first whenever there is something 
 - `deploy.sh` and preflight refuse a `library.toml` that sets `ENVIRONMENT = "local"` or has no `ACCESS_AUD` line, the two configurations that would deploy the library without a login. `deploy.sh` rejects any option other than `--dry-run` instead of treating a typo as a real deploy.
 - `upgrade.sh` strips escape characters from the changelog it shows and fetches only from `https://`, `ssh://`, `git@host:` or local remotes.
 
-### Fixed
-
 - Completing a master upload acts only on an upload this library started: a completion whose declared size does not match removes the half-upload it created, writes an audit row (`library.master_removed`), and never touches a master already on file. Aborting a multipart upload needs the upload's own id and is audited (`library.master_aborted`). A plain master upload no longer writes over an unlinked object already at the master's key; Replace does.
 - The upload path verifies the bytes before storing them, as Replace already did: the declared SHA-256 must match, and the file must be the format its name says (a PNG under a `.jpg` key, or a file that is not a web image, is refused with 415). Two uploads racing for one new key cannot both win; the bucket write is conditional on the key being free.
 - A retry that finds its object already stored completes the record without rewriting what the first upload recorded: dimensions, uploader and capture data are kept, and only empty fields are filled.
