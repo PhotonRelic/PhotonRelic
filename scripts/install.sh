@@ -141,7 +141,8 @@ bootstrap_howto() {
 }
 # bootstrap_reminder -> the bootstrap token can mint anything; never let it be forgotten
 bootstrap_reminder() {
-  [ "$MINT" = true ] && [ "$BOOTSTRAP_RETIRED" = false ] || return 0
+  # Only when a bootstrap token was actually in hand and is still alive.
+  [ "$MINT" = true ] && [ -n "${BOOT:-}" ] && [ "$BOOTSTRAP_RETIRED" = false ] || return 0
   say ""
   say "The bootstrap token is still valid and can create any token in the account. When you are done with it, in ${DIR:-the deployment repository}:"
   say "  read -rs CLOUDFLARE_BOOTSTRAP_TOKEN && export CLOUDFLARE_BOOTSTRAP_TOKEN && sh photonrelic/scripts/mint-tokens.sh environments/${NAME:-<env>} --retire-bootstrap"
