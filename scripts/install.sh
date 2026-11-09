@@ -13,7 +13,8 @@
 #   --name <env>            environment name: lowercase letters, digits, hyphens (default production)
 #   --library-host <host>   the staff app's hostname, e.g. media-admin.example.com
 #   --resizer-host <host>   the public image hostname, e.g. img.example.com
-#   --account-id <id>       your Cloudflare account ID (32 hex characters)
+#   --account-id <id>       your Cloudflare account ID (32 hex characters; not needed with --mint,
+#                           the bootstrap token names it)
 #   --email-domains <list>  comma-separated email domains staff sign in with
 #   --team-name <name>      Zero Trust team name, created if the account has none
 #   --version <vX.Y.Z>      the release to install (default: the newest)
@@ -264,16 +265,6 @@ say ""; say "== Credentials"
 if [ -f .env ]; then
   say ".env exists; using it"
 else
-  ask ACCOUNT_ID --account-id "Cloudflare account ID (32 hex characters, on the account's home page)"
-  case "$ACCOUNT_ID" in *[!0-9a-f]*|"") die "the account ID is 32 lowercase hex characters" ;; esac
-  [ ${#ACCOUNT_ID} -eq 32 ] || die "the account ID is 32 hex characters"
-  ask EMAIL_DOMAINS --email-domains "Email domains staff sign in with, comma-separated"
-  case "$EMAIL_DOMAINS" in *[!a-z0-9.,-]*|"") die "--email-domains is a comma-separated list of lowercase domains" ;; esac
-  if [ -z "$TEAM_NAME" ] && [ "$YES" = false ] && have_tty; then
-    printf 'Zero Trust team name to create (leave empty if the account already has one): ' >/dev/tty
-    read -r TEAM_NAME </dev/tty || TEAM_NAME=""
-  fi
-  case "$TEAM_NAME" in *[!a-z0-9-]*) die "--team-name is lowercase letters, digits and hyphens" ;; esac
   if [ "$MINT" = true ]; then
     say "the deploy token will be minted from the bootstrap token"
     CLOUDFLARE_API_TOKEN=""
@@ -287,6 +278,30 @@ else
       printf '\n' >/dev/tty
       case "$BOOT" in *[!A-Za-z0-9_-]*|"") die "that does not look like an API token" ;; esac
     fi
+    # The token is scoped to one account, and that account is the one to install
+    # into: no need to ask for an id the person would have to copy from the page
+    # they just left.
+    if [ -z "$ACCOUNT_ID" ]; then
+      found=$(printf 'Authorization: Bearer %s\n' "$BOOT" | curl -sS -H @- -m 20 "https://api.cloudflare.com/client/v4/accounts?per_page=5" 2>/dev/null \
+        | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const r=JSON.parse(s);if(r.success&&r.result.length===1)process.stdout.write(r.result[0].id)}catch{}})' 2>/dev/null || true)
+      case "$found" in
+        ????????????????????????????????) ACCOUNT_ID=$found; say "account id taken from the bootstrap token: $ACCOUNT_ID" ;;
+        *) say "the bootstrap token does not name exactly one account; asking for the id" ;;
+      esac
+    fi
+  fi
+  ask ACCOUNT_ID --account-id "Cloudflare account ID (32 hex characters, on the account's home page)"
+  case "$ACCOUNT_ID" in *[!0-9a-f]*|"") die "the account ID is 32 lowercase hex characters" ;; esac
+  [ ${#ACCOUNT_ID} -eq 32 ] || die "the account ID is 32 hex characters"
+  ask EMAIL_DOMAINS --email-domains "Email domains staff sign in with, comma-separated"
+  case "$EMAIL_DOMAINS" in *[!a-z0-9.,-]*|"") die "--email-domains is a comma-separated list of lowercase domains" ;; esac
+  if [ -z "$TEAM_NAME" ] && [ "$YES" = false ] && have_tty; then
+    printf 'Zero Trust team name to create (leave empty if the account already has one): ' >/dev/tty
+    read -r TEAM_NAME </dev/tty || TEAM_NAME=""
+  fi
+  case "$TEAM_NAME" in *[!a-z0-9-]*) die "--team-name is lowercase letters, digits and hyphens" ;; esac
+  if [ "$MINT" = true ]; then
+    : # the bootstrap token was taken above, before the account id
   elif [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
     have_tty || die "no terminal to ask for the token: set CLOUDFLARE_API_TOKEN in the environment"
     printf 'Deploy token (not shown; permissions in docs/deploy.md, Tokens): ' >/dev/tty

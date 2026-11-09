@@ -47,7 +47,7 @@ Ask these before step 2. Everything else you can find out or decide.
 | The library's hostname (staff, private) | A custom domain under a zone in their account | `media-admin.example.com` |
 | The resizer's hostname (public) | Same | `img.example.com` |
 | The email domains staff sign in with | The Access policy | `example.com` |
-| Their Cloudflare account ID | For `.env`; shown on the account's home page | (32 hex characters) |
+| Their Cloudflare account ID | For `.env`; shown on the account's home page. Not needed on the bootstrap path: the installer reads it from the bootstrap token. | (32 hex characters) |
 | Whether they want to create the tokens themselves, or give you one bootstrap token that mints them | Decides between the two paths below | "mint them" |
 | Confirmation that the account is on Workers Paid and has R2, Images and Zero Trust enabled | Preflight cannot read the plan or Images with the deploy token | yes / no |
 | Whether they want the optional features now: usage counts, cache purge, masters in the bucket | Each needs a token they create | later |
@@ -60,7 +60,7 @@ Each step gives the command and what a good result looks like. Run commands as w
 
 ```sh
 sh scripts/install.sh --dir ../<dir> --name <env> --library-host <library host> --resizer-host <resizer host> \
-  --account-id <account id> --email-domains <domains> --mint --usage --purge --masters --retire-bootstrap --yes
+  --email-domains <domains> --mint --usage --purge --masters --retire-bootstrap --yes
 ```
 
 Be straight with the person about what that token is: a token that can mint tokens is as powerful as anything it mints, which for this account is everything. The expiry, the IP filter and `--retire-bootstrap` are what make it acceptable; say so when you ask for it. **Always pass `--retire-bootstrap`** unless the person says they will reuse the token for another environment, and in that case tell them at hand-over that it is still valid and where to delete it. If the install stops partway, the installer prints the retire command; run it, or relay it, before anything else. Never leave a bootstrap token behind without the person knowing. Afterwards they can audit what was created under **Manage Account → Account API Tokens**, where every token this run made is named `photonrelic-<env>-…`. Without `CLOUDFLARE_BOOTSTRAP_TOKEN` in your environment the installer behaves as below and the person creates the deploy token themselves.

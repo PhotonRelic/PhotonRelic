@@ -141,7 +141,9 @@ The bootstrap token has one permission, **Account → Account API Tokens → Edi
 1. Open [this link](https://dash.cloudflare.com/?to=/:account/api-tokens&permissionGroupKeys=%5B%7B%22key%22%3A%22account_api_tokens%22%2C%22type%22%3A%22edit%22%7D%5D&name=PhotonRelic%20bootstrap) signed in to Cloudflare. It opens the account token form with the one permission filled in. By hand instead: **Manage Account → Account API Tokens → Create Token → Create Custom Token**, one permission row, **Account · Account API Tokens · Edit**.
 2. **Account Resources**: Include, your one account. No zone permission is needed.
 3. **TTL**: today to tomorrow. **Client IP Address Filtering**: your IP, if you know it. The script warns when a token has no expiry.
-4. **Continue to summary → Create Token**. Copy the token; it is shown once. The installer asks for it at a hidden prompt, and the same text is printed there. It needs no zone permission: the deploy token it mints starts with every zone in the account, looks up the zones of your two hostnames with its own permissions, and is narrowed to those before it is written anywhere. If that narrowing cannot be done, the new token is deleted and nothing is written. Then:
+4. **Continue to summary → Create Token**. Copy the token; it is shown once. The installer asks for it at a hidden prompt, and the same text is printed there.
+
+The page also shows your account ID. You do not need to copy it: the token is scoped to that one account, and the installer reads the ID from it, so the account question is skipped on this path. It needs no zone permission: the deploy token it mints starts with every zone in the account, looks up the zones of your two hostnames with its own permissions, and is narrowed to those before it is written anywhere. If that narrowing cannot be done, the new token is deleted and nothing is written. Then:
 
 ```sh
 sh install.sh --mint --usage --purge --masters --retire-bootstrap

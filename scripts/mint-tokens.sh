@@ -80,7 +80,14 @@ HOWTO
 fi
 unset CLOUDFLARE_BOOTSTRAP_TOKEN
 case "$BOOT" in *[!A-Za-z0-9_-]*) die "CLOUDFLARE_BOOTSTRAP_TOKEN does not look like an API token" ;; esac
-: "${CLOUDFLARE_ACCOUNT_ID:?set CLOUDFLARE_ACCOUNT_ID (environment or ./.env)}"
+# The account: from the environment or .env, or, when neither has it, the one
+# account the bootstrap token is scoped to.
+if [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+  CLOUDFLARE_ACCOUNT_ID=$(cf_as "$BOOT" GET "/accounts?per_page=5" | json '(r.success && r.result.length === 1 && r.result[0].id) || null' 2>/dev/null || true)
+  [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || die "set CLOUDFLARE_ACCOUNT_ID (environment or ./.env); the bootstrap token does not name exactly one account"
+  echo "account id taken from the bootstrap token: $CLOUDFLARE_ACCOUNT_ID"
+  env_has CLOUDFLARE_ACCOUNT_ID || env_set CLOUDFLARE_ACCOUNT_ID "$CLOUDFLARE_ACCOUNT_ID"
+fi
 case "$CLOUDFLARE_ACCOUNT_ID" in *[!0-9a-f]*|"") die "CLOUDFLARE_ACCOUNT_ID must be 32 hex characters" ;; esac
 A=$CLOUDFLARE_ACCOUNT_ID
 case "$EXPIRES" in ""|*[!0-9]*) [ -z "$EXPIRES" ] || die "--expires takes a number of days" ;; esac
