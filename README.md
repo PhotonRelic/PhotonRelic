@@ -6,6 +6,8 @@ A digital asset manager for images, built entirely on Cloudflare: R2 holds the
 files, D1 holds what you know about them, Workers serve the UI, Cloudflare
 Images resizes on request, and Cloudflare Access decides who gets in.
 
+**Deploying it?** [`docs/deploy.md`](docs/deploy.md) takes you from a Cloudflare account to a working library, with scripts that check the account before anything is created and check the result after. If an AI agent is doing the work for you, point it at [`AGENTS.md`](AGENTS.md): the same procedure written for an agent, including what it must ask you for and what it must never do.
+
 It has two Workers. You can use either one on its own.
 
 | Part | What it does |
@@ -166,43 +168,23 @@ Locally, Access is skipped: every request is treated as `DEV_IDENTITY` from `.de
 
 ### Deploy
 
-A deployment is a directory holding a `library.toml` and a `resizer.toml` (either one is optional) plus two
-scripts that read them. `deploy/example/` is the template; everything under `deploy/` except the example is
-ignored by git, because the ids and hostnames in it belong to one account. For a team, put the directory in
-a private repo with PhotonRelic as a submodule instead, and point `main`, `assets.directory` and
-`migrations_dir` at the submodule.
+A deployment is a directory holding a `library.toml` and a `resizer.toml` (either one is optional) built from
+the template in `deploy/example/`, plus the scripts in `scripts/` that read them. Everything under `deploy/`
+except the example is ignored by git, because the ids and hostnames in it belong to one account; the
+intended home for them is a private repository with PhotonRelic as a submodule, which
+`scripts/init-deploy-repo.sh` creates. The scripts, in the order they are run:
 
-1. Copy the template and edit it: Worker names, the two hostnames (the library's hostname is put behind
-   Access; the resizer's is public), the bucket and database names, and `MEDIA_ORIGIN`.
-   ```sh
-   cp -r deploy/example deploy/production
-   ```
-2. Put credentials in `.env` (see `.env.example`): a Cloudflare API token with Workers Scripts, Workers R2
-   Storage, D1, Access: Apps and Policies, and Access: Organizations, Identity Providers, and Groups
-   (account scope) plus Workers Routes and DNS (zone scope); the account id; and the email domains the
-   library should let in. Enable R2 in the dashboard once, and Zero Trust if the account has none (the
-   script can create the organization when `ACCESS_TEAM_NAME` is set and Access has been enabled). For
-   [usage](#usage), also a second token with Account Analytics Read only, as `ANALYTICS_TOKEN`.
-3. Provision. This creates the Access application (allowing the email domains, One-time PIN sign-in), the
-   bucket and the database, and writes the team domain, Audience tag and database id into `library.toml`,
-   and the database id into `resizer.toml` too, where the resizer binds the same database for its metadata
-   API (drop that block to deploy the resizer without it). It is idempotent; re-run it after changing the
-   email domains and the policy is updated.
-   ```sh
-   sh scripts/provision.sh deploy/production
-   ```
-4. Deploy: migrations, then the resizer, then the library. `--dry-run` builds both Workers without
-   credentials.
-   ```sh
-   sh scripts/deploy.sh deploy/production
-   ```
-5. Optional, for the cache purge: set `CF_ZONE_ID` in `library.toml` to the zone the resizer's
-   hostname is in, and give the library a `CACHE_PURGE_TOKEN` secret: an API token with the one
-   permission Zone → Cache Purge → Purge, on that zone only. Put it in `.env` and `deploy.sh` sets
-   it with `wrangler secret put` on every deploy, or set it once by hand:
-   ```sh
-   pnpm --dir workers/library exec wrangler secret put CACHE_PURGE_TOKEN -c ../../deploy/production/library.toml
-   ```
+| Script | Does |
+| --- | --- |
+| `init-deploy-repo.sh <dir> --name <env> --library-host <h> --resizer-host <h> [--source <url>]` | Creates the private deployment repository: submodule, filled-in configuration, wrappers, README. |
+| `preflight.sh deploy/<env>` | Checks the machine, the token's permissions, R2, Zero Trust, the hostnames' zones and the optional tokens. Creates nothing. |
+| `provision.sh deploy/<env>` | Creates the Access application, the bucket and its CORS rule, and the database; writes their ids into the configuration. Idempotent. |
+| `deploy.sh deploy/<env> [--dry-run]` | Applies migrations, deploys the resizer, then the library; stores the optional tokens from `.env` as secrets. |
+| `verify.sh deploy/<env> [--key <key>]` | Checks the deployed result from the outside: the resizer, the metadata API, the Access login, migrations, CORS, and with a key, resizing. |
+
+Credentials come from `.env` in the directory the scripts run from (see `.env.example`). The full walk-through,
+with the token permissions, the optional features, upgrading, a second environment and troubleshooting, is
+[`docs/deploy.md`](docs/deploy.md).
 
 The library refuses to start without `ACCESS_AUD`, so a deployment that skipped provisioning fails closed.
 Keep the library's `LIBRARY_PREFIXES` and the resizer's `SERVED_PREFIXES` in step, so every file the library
