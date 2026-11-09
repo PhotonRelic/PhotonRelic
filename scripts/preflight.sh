@@ -15,10 +15,6 @@ set -eu
 ENV_DIR=$(env_dir "${1:?usage: preflight.sh <environment directory>}")
 LIB="$ENV_DIR/library.toml"
 RES="$ENV_DIR/resizer.toml"
-PASS=0; FAILS=0
-pass() { PASS=$((PASS + 1)); printf 'pass  %s\n' "$1"; }
-fail() { FAILS=$((FAILS + 1)); printf 'FAIL  %s\n      fix: %s\n' "$1" "$2"; }
-note() { printf 'note  %s\n' "$1"; }
 
 # A GET against the API: prints "ok", "denied" (the token lacks the permission),
 # or the first error message, so a probe can tell a missing permission from a

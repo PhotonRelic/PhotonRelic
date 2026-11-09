@@ -6,7 +6,20 @@ A digital asset manager for images, built entirely on Cloudflare: R2 holds the
 files, D1 holds what you know about them, Workers serve the UI, Cloudflare
 Images resizes on request, and Cloudflare Access decides who gets in.
 
-**Deploying it?** [`docs/deploy.md`](docs/deploy.md) takes you from a Cloudflare account to a working library, with scripts that check the account before anything is created and check the result after. If an AI agent is doing the work for you, point it at [`AGENTS.md`](AGENTS.md): the same procedure written for an agent, including what it must ask you for and what it must never do.
+## Quick start
+
+Six switches in the Cloudflare dashboard, then one command. [`docs/deploy.md`](docs/deploy.md) explains every step and what comes after; if an AI agent is doing this for you, point it at [`AGENTS.md`](AGENTS.md), the same procedure written for an agent, with what it must ask you for and what it must never do.
+
+1. The account is on the **Workers Paid** plan, with **R2**, **Images** and **Zero Trust** enabled.
+2. Your domain is a zone in the account, so the two hostnames (`img.example.com`, `media-admin.example.com`) can be yours.
+3. You have an API token with the deploy permissions ([Tokens](docs/deploy.md#tokens)).
+
+```sh
+curl -fsSLO https://github.com/PhotonRelic/PhotonRelic/releases/latest/download/install.sh
+sh install.sh
+```
+
+The installer asks for the two hostnames, your account ID, the email domains staff sign in with and the token (not echoed), then creates a private deployment repository in `./photonrelic-deploy` pinned to the newest [release](https://github.com/PhotonRelic/PhotonRelic/releases), checks the account before creating anything, provisions, deploys and verifies. It installs nothing on your machine; git, Node 22.13 or later and pnpm 9 or later must be there. Upgrading later is one command in that repository, and nothing changes until you run it. Every release is listed in [`CHANGELOG.md`](CHANGELOG.md) with what an operator must do.
 
 It has two Workers. You can use either one on its own.
 
@@ -171,20 +184,24 @@ Locally, Access is skipped: every request is treated as `DEV_IDENTITY` from `.de
 A deployment is a directory holding a `library.toml` and a `resizer.toml` (either one is optional) built from
 the template in `deploy/example/`, plus the scripts in `scripts/` that read them. Everything under `deploy/`
 except the example is ignored by git, because the ids and hostnames in it belong to one account; the
-intended home for them is a private repository with PhotonRelic as a submodule, which
-`scripts/init-deploy-repo.sh` creates. The scripts, in the order they are run:
+intended home for them is a private repository with PhotonRelic as a submodule pinned to a release, which
+`scripts/init-deploy-repo.sh` creates and `scripts/install.sh` ([Quick start](#quick-start)) drives from one
+command. The scripts, in the order they are run:
 
 | Script | Does |
 | --- | --- |
-| `init-deploy-repo.sh <dir> --name <env> --library-host <h> --resizer-host <h> [--source <url>]` | Creates the private deployment repository: submodule, filled-in configuration, wrappers, README. |
+| `install.sh [options]` | All of the below from one command, asking for what it needs; every answer has a flag. Attached to every release. |
+| `init-deploy-repo.sh <dir> --name <env> --library-host <h> --resizer-host <h> [--source <url>] [--ref <tag>]` | Creates the private deployment repository: submodule at the newest release, filled-in configuration, wrappers, README. |
 | `preflight.sh deploy/<env>` | Checks the machine, the token's permissions, R2, Zero Trust, the hostnames' zones and the optional tokens. Creates nothing. |
 | `provision.sh deploy/<env>` | Creates the Access application, the bucket and its CORS rule, and the database; writes their ids into the configuration. Idempotent. |
 | `deploy.sh deploy/<env> [--dry-run]` | Applies migrations, deploys the resizer, then the library; stores the optional tokens from `.env` as secrets. |
 | `verify.sh deploy/<env> [--key <key>]` | Checks the deployed result from the outside: the resizer, the metadata API, the Access login, migrations, CORS, and with a key, resizing. |
+| `upgrade.sh deploy/<env> [vX.Y.Z]` | In a deployment repository: shows the changelog between the pin and the target, moves the pin, deploys, verifies, commits. |
 
 Credentials come from `.env` in the directory the scripts run from (see `.env.example`). The full walk-through,
 with the token permissions, the optional features, upgrading, a second environment and troubleshooting, is
-[`docs/deploy.md`](docs/deploy.md).
+[`docs/deploy.md`](docs/deploy.md). Releases are tags `vX.Y.Z` with notes from [`CHANGELOG.md`](CHANGELOG.md);
+a deployment pins one and moves only when its operator runs the upgrade.
 
 The library refuses to start without `ACCESS_AUD`, so a deployment that skipped provisioning fails closed.
 Keep the library's `LIBRARY_PREFIXES` and the resizer's `SERVED_PREFIXES` in step, so every file the library

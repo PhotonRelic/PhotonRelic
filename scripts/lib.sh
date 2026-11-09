@@ -1,5 +1,5 @@
 #!/bin/sh
-# Shared by provision.sh and deploy.sh; not run on its own.
+# Shared by the scripts in this directory; not run on its own.
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
 # Credentials come from the environment, or from a .env in the directory the
@@ -52,3 +52,20 @@ ok() {
 
 # toml KEY FILE  -> the first `KEY = "value"` in a wrangler.toml
 toml() { sed -n "s/^$1 = \"\(.*\)\".*/\1/p" "$2" | head -n 1; }
+
+# pass / fail / note  -> one line per check, in the shape preflight, verify and
+# release-check share and AGENTS.md teaches agents to relay. fail takes the
+# message and the fix.
+PASS=0; FAILS=0
+pass() { PASS=$((PASS + 1)); printf 'pass  %s\n' "$1"; }
+fail() { FAILS=$((FAILS + 1)); printf 'FAIL  %s\n      fix: %s\n' "$1" "$2"; }
+note() { printf 'note  %s\n' "$1"; }
+
+# latest_stable_tag REPO  -> the newest vX.Y.Z tag of a remote URL or a local
+# path, skipping release candidates; nothing when there is none. install.sh
+# carries a copy, because it runs before any checkout exists.
+latest_stable_tag() {
+  git ls-remote --refs --tags -- "$1" 2>/dev/null \
+    | sed -n 's|^[0-9a-f]*[[:space:]]*refs/tags/v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$|\1|p' \
+    | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1 | sed 's/^./v&/'
+}

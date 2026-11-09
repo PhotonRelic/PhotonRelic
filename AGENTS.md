@@ -14,11 +14,14 @@ PhotonRelic is a digital asset manager for images that runs entirely on Cloudfla
 | `workers/library/migrations/` | Database migrations, applied in order by the deploy. Never edit one that exists. |
 | `packages/media-params/` | The resize menu and URL builder shared with websites. |
 | `deploy/example/` | The template a deployment is made from. Everything else under `deploy/` is ignored by git. |
-| `scripts/init-deploy-repo.sh` | Creates the private deployment repository. |
+| `scripts/install.sh` | The whole procedure below from one command; every question has a flag. Attached to every release. |
+| `scripts/init-deploy-repo.sh` | Creates the private deployment repository, pinned to a release. |
 | `scripts/preflight.sh` | Checks the machine, token and account before anything is created. |
 | `scripts/provision.sh` | Creates the Access application, bucket, database; writes ids into the config. |
 | `scripts/deploy.sh` | Applies migrations, deploys both Workers, stores optional secrets. |
 | `scripts/verify.sh` | Checks the deployed result from the outside. |
+| `scripts/upgrade.sh` | In a deployment repository: moves the pin to a newer release, deploys, verifies, commits. |
+| `CHANGELOG.md` | Every release, with **Operators must do** first. Read it before an upgrade. |
 | `tools/prep-images.py` | Prepares a shoot on the photographer's machine before upload. Not part of deploying. |
 
 ## Rules
@@ -30,6 +33,7 @@ PhotonRelic is a digital asset manager for images that runs entirely on Cloudfla
 5. **Never edit a migration that exists, and never run SQL against the database by hand.** The deploy applies migrations.
 6. **Do not change the Workers' code to make a deployment work.** If the configuration cannot express what is needed, say so.
 7. **Do not put the person's hostnames, account id, database id or Access tags into any file of this repository**, into an issue, or into a pull request. They belong in the deployment repository only.
+8. **Deploy releases, not `master`.** The scaffold and the installer pin the newest release; leave it there unless the person names another. Never move a deployment to a release candidate (`-rc.`) unless they ask for that one.
 
 ## What to ask the person, and when
 
@@ -49,6 +53,15 @@ Ask these before step 2. Everything else you can find out or decide.
 ## Procedure
 
 Each step gives the command and what a good result looks like. Run commands as written.
+
+**The short way.** Once the person has created the token and put it in their own environment (`export CLOUDFLARE_API_TOKEN=…` in their shell, done by them, not by you), the installer does steps 2 to 8 in one run. First without creating anything:
+
+```sh
+sh scripts/install.sh --dir ../<dir> --name <env> --library-host <library host> --resizer-host <resizer host> \
+  --account-id <account id> --email-domains <domains> --yes --dry-run
+```
+
+Good: `preflight: N passed, 0 failed` and `dry run: nothing was created`. Then the same command without `--dry-run`, which provisions, deploys and verifies and ends with `installed. Sign in at …`. If it stops, it prints the failure with its `fix:` and the command that continues; relay the failure, and when it is fixed run that command or the installer again. Without `CLOUDFLARE_API_TOKEN` in the environment the installer asks for the token at a hidden prompt, which only the person can answer; it never takes the token as an argument. The steps below are the same work one at a time.
 
 **1. Check the machine.** `node --version` is 22.13 or later; `pnpm --version` is 9 or later (if missing: `npm install -g pnpm@12`); `git` and `curl` exist. In the deployment repository every command is `pnpm run <name>`: pnpm's own `setup` and `deploy` commands shadow the scripts when `run` is left out.
 
@@ -78,7 +91,7 @@ Good: it prints `done: … is staged, not committed` and the four next commands.
 
 - **Add staff:** add their email domain to `ACCESS_ALLOWED_EMAIL_DOMAINS` in `.env`, run `pnpm run provision <env>` again.
 - **Turn on an optional feature:** the person adds the token to `.env` (and for cache purge uncomments `CF_ZONE_ID` in `library.toml`), then `pnpm run deploy <env>`.
-- **Upgrade PhotonRelic:** `docs/deploy.md`, Upgrading. Read the commits in between for a new variable before deploying.
+- **Upgrade PhotonRelic:** in the deployment repository, `pnpm run upgrade-photonrelic <env>` (or `… <env> vX.Y.Z`). It prints the changelog between the pin and the target and asks; read **Operators must do** to the person and stop until anything it asks for is in place, then confirm (or pass `--yes` when they have agreed). Good: `done: <env> is on vX.Y.Z and the pin is committed.` Never pass `--allow-downgrade` unless they ask for an older release by name.
 - **A second environment:** `docs/deploy.md`, A second environment.
 
 ## When something fails
@@ -93,5 +106,6 @@ Use the troubleshooting table in `docs/deploy.md`. The ones you will meet most:
 | `Worker exceeded CPU time limit` on thumbnails | The account is on Workers Free. Ask the person to move to Workers Paid, then deploy the resizer again. |
 | `served as stored: x-media-transform: unavailable` | Images is not enabled. Ask the person to enable it; no redeploy. |
 | The library answers 500 | Provision did not run, or one half of the R2 token pair is set. Fix `.env`, deploy again. |
+| Upgrade: `no release tags` | The fork or mirror lacks the project's tags. Tell the person the two git commands in `docs/deploy.md`, Upgrading. |
 
 If the table does not cover it, show the person the exact output and stop.

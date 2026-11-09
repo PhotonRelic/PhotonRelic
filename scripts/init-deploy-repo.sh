@@ -1,6 +1,6 @@
 #!/bin/sh
 # Creates a private deployment repository for one or more PhotonRelic
-# environments: PhotonRelic as a git submodule pinned to a commit, an
+# environments: PhotonRelic as a git submodule pinned to a release, an
 # environment directory filled in from deploy/example, wrapper scripts, a
 # package.json and a README. Nothing in it is secret; the identifiers that
 # provision.sh writes into it belong to one account, which is why the
@@ -8,17 +8,19 @@
 #
 #   sh scripts/init-deploy-repo.sh <dir> --name <env> \
 #       --library-host media-admin.example.com --resizer-host img.example.com \
-#       [--source <git url>] [--ref <commit>]
+#       [--source <git url>] [--ref <tag or commit>]
 #
 # --source is the repository the submodule points at: the public project
-# (default), your GitHub fork, or a private mirror. --ref is the commit to
-# pin; the default is the commit of this checkout. <dir> must not exist or
-# must be empty. The result is staged and not committed, so you can read it
+# (default), your GitHub fork, or a private mirror. --ref is the release tag
+# or commit to pin; the default is the newest release at --source, or the
+# commit of this checkout when --source is a local path. <dir> must not exist
+# or must be empty. The result is staged and not committed, so you can read it
 # first. Then, inside <dir>: cp .env.example .env, fill it in, and run
 # pnpm run setup, then pnpm run preflight / provision / deploy / verify <env>
 # (always with `run`: pnpm's own setup and deploy commands shadow the scripts).
+# scripts/install.sh does all of this from one command.
 set -eu
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+. "$(dirname -- "$0")/lib.sh"
 DIR=""; NAME=""; LIB_HOST=""; RES_HOST=""; SOURCE="https://github.com/PhotonRelic/PhotonRelic.git"; REF=""
 usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 while [ $# -gt 0 ]; do
@@ -38,19 +40,26 @@ case "$NAME" in *[!a-z0-9-]*|-*|*-) echo "init-deploy-repo: --name must be lower
 for h in "$LIB_HOST" "$RES_HOST"; do case "$h" in *://*|*/*|*example.com) echo "init-deploy-repo: $h is not a bare hostname of yours" >&2; exit 2 ;; esac; done
 [ "$LIB_HOST" != "$RES_HOST" ] || { echo "init-deploy-repo: the library and the resizer need different hostnames" >&2; exit 2; }
 if [ -e "$DIR" ] && [ -n "$(ls -A "$DIR" 2>/dev/null)" ]; then echo "init-deploy-repo: $DIR exists and is not empty" >&2; exit 1; fi
-[ -n "$REF" ] || REF=$(git -C "$ROOT" rev-parse HEAD)
 command -v git >/dev/null 2>&1 || { echo "init-deploy-repo: git is required" >&2; exit 1; }
+if [ -z "$REF" ]; then
+  case "$SOURCE" in
+    /*|./*|../*) REF=$(git -C "$ROOT" rev-parse HEAD) ;;
+    *) REF=$(latest_stable_tag "$SOURCE")
+       [ -n "$REF" ] || { echo "init-deploy-repo: $SOURCE has no release tags; pass --ref <tag or commit>" >&2; exit 1; } ;;
+  esac
+fi
 
 mkdir -p "$DIR"
 DIR=$(CDPATH= cd -- "$DIR" && pwd)
 cd "$DIR"
 git init -q
-echo "== PhotonRelic submodule from $SOURCE at $(printf %s "$REF" | cut -c1-7)"
+case "$REF" in v[0-9]*) shown=$REF ;; *) shown=$(printf %s "$REF" | cut -c1-7) ;; esac
+echo "== PhotonRelic submodule from $SOURCE at $shown"
 case "$SOURCE" in
   /*|./*|../*) git -c protocol.file.allow=always submodule add -q -- "$SOURCE" photonrelic ;;
   *) git submodule add -q -- "$SOURCE" photonrelic ;;
 esac
-git -C photonrelic checkout -q "$REF" 2>/dev/null || { echo "init-deploy-repo: $REF is not in $SOURCE; pass --ref with a commit that is" >&2; exit 1; }
+git -C photonrelic checkout -q "$REF" 2>/dev/null || { echo "init-deploy-repo: $REF is not in $SOURCE; pass --ref with a tag or commit that is" >&2; exit 1; }
 git add photonrelic
 
 echo "== environments/$NAME from deploy/example"
@@ -67,7 +76,7 @@ fill resizer.toml
 
 echo "== scripts, package.json, README"
 mkdir -p scripts
-for s in preflight provision deploy verify; do
+for s in preflight provision deploy verify upgrade; do
   cat > "scripts/$s.sh" <<WRAP
 #!/bin/sh
 # Runs PhotonRelic's scripts/$s.sh on an environment here; .env is read from this directory.
@@ -91,7 +100,8 @@ cat > package.json <<JSON
     "preflight": "sh scripts/preflight.sh",
     "provision": "sh scripts/provision.sh",
     "deploy": "sh scripts/deploy.sh",
-    "verify": "sh scripts/verify.sh"
+    "verify": "sh scripts/verify.sh",
+    "upgrade-photonrelic": "sh scripts/upgrade.sh"
   }
 }
 JSON
@@ -110,7 +120,7 @@ cat > README.md <<MD
 
 Deployment configuration for [PhotonRelic](https://github.com/PhotonRelic/PhotonRelic)
 environments. The application source is the \`photonrelic\` submodule, pinned to
-one commit; this repository holds only what is specific to each deployment:
+one release ($shown); this repository holds only what is specific to each deployment:
 hostnames, bindings, Access settings and the scripts that provision them.
 Keep it private: the ids provision.sh writes here belong to one account.
 
@@ -124,7 +134,7 @@ Keep it private: the ids provision.sh writes here belong to one account.
 photonrelic/                       PhotonRelic source (git submodule, pinned)
 environments/<name>/library.toml   Wrangler config for the library Worker
 environments/<name>/resizer.toml   Wrangler config for the resizer Worker
-scripts/{preflight,provision,deploy,verify}.sh   wrappers for photonrelic/scripts/
+scripts/{preflight,provision,deploy,verify,upgrade}.sh   wrappers for photonrelic/scripts/
 .env                               credentials (never committed; see .env.example)
 \`\`\`
 
@@ -150,15 +160,14 @@ The full guide, with the token permissions and the optional features, is
 ## Upgrading PhotonRelic
 
 \`\`\`sh
-git -C photonrelic fetch origin && git -C photonrelic log --oneline HEAD..origin/master   # what is new
-git -C photonrelic checkout <commit>
-pnpm run setup && pnpm run check
-pnpm run deploy $NAME && pnpm run verify $NAME
-git add photonrelic && git commit -m "$NAME: PhotonRelic <commit>"
+pnpm run upgrade-photonrelic $NAME            # to the newest release
+pnpm run upgrade-photonrelic $NAME vX.Y.Z     # to a particular one
 \`\`\`
 
-Read the commits between for a new variable or binding; add it to
-\`environments/$NAME/\` before deploying.
+It shows the changelog between your pin and the target, asks, moves the pin,
+builds, deploys, verifies and commits. Read the **Operators must do** part of
+the changelog before confirming; a new variable or binding goes into
+\`environments/$NAME/\` first. Nothing changes until you run this.
 
 ## Another environment
 
