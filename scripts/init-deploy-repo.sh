@@ -15,8 +15,8 @@
 # pin; the default is the commit of this checkout. <dir> must not exist or
 # must be empty. The result is staged and not committed, so you can read it
 # first. Then, inside <dir>: cp .env.example .env, fill it in, and run
-# pnpm setup, pnpm preflight <env>, pnpm provision <env>, pnpm deploy <env>,
-# pnpm verify <env>.
+# pnpm run setup, then pnpm run preflight / provision / deploy / verify <env>
+# (always with `run`: pnpm's own setup and deploy commands shadow the scripts).
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 DIR=""; NAME=""; LIB_HOST=""; RES_HOST=""; SOURCE="https://github.com/PhotonRelic/PhotonRelic.git"; REF=""
@@ -132,14 +132,17 @@ scripts/{preflight,provision,deploy,verify}.sh   wrappers for photonrelic/script
 
 \`\`\`sh
 cp .env.example .env            # fill in the token, the account id and the staff email domains
-pnpm install && pnpm setup      # submodule and its dependencies
-pnpm preflight $NAME            # checks the token, the account and the hostnames; creates nothing
-pnpm provision $NAME            # Access application, bucket, database; writes the ids into library.toml
+pnpm run setup      # submodule and its dependencies
+pnpm run preflight $NAME            # checks the token, the account and the hostnames; creates nothing
+pnpm run provision $NAME            # Access application, bucket, database; writes the ids into library.toml
 git add environments && git commit -m "$NAME: provisioned"
-pnpm check                      # builds both Workers without credentials
-pnpm deploy $NAME               # migrations, resizer, library
-pnpm verify $NAME               # checks the result from the outside
+pnpm run check                      # builds both Workers without credentials
+pnpm run deploy $NAME               # migrations, resizer, library
+pnpm run verify $NAME               # checks the result from the outside
 \`\`\`
+
+Always \`pnpm run <name>\`: pnpm's own \`setup\` and \`deploy\` commands run
+instead of these scripts when \`run\` is left out.
 
 The full guide, with the token permissions and the optional features, is
 \`photonrelic/docs/deploy.md\`.
@@ -149,8 +152,8 @@ The full guide, with the token permissions and the optional features, is
 \`\`\`sh
 git -C photonrelic fetch origin && git -C photonrelic log --oneline HEAD..origin/master   # what is new
 git -C photonrelic checkout <commit>
-pnpm setup && pnpm check
-pnpm deploy $NAME && pnpm verify $NAME
+pnpm run setup && pnpm run check
+pnpm run deploy $NAME && pnpm run verify $NAME
 git add photonrelic && git commit -m "$NAME: PhotonRelic <commit>"
 \`\`\`
 
@@ -168,6 +171,6 @@ git add -A
 echo
 echo "done: $DIR is staged, not committed. Next, in $DIR:"
 echo "  cp .env.example .env    # then fill it in"
-echo "  pnpm install && pnpm setup"
-echo "  pnpm preflight $NAME"
+echo "  pnpm run setup"
+echo "  pnpm run preflight $NAME"
 echo "  git commit -m \"PhotonRelic deployment repository for $NAME\""

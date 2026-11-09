@@ -54,7 +54,7 @@ if command -v node >/dev/null 2>&1; then
   v=$(node -p 'process.versions.node')
   if node -e 'const [a,b]=process.versions.node.split(".").map(Number);process.exit(a>22||(a===22&&b>=13)?0:1)'; then pass "node $v"; else fail "node $v is older than 22.13" "install Node 22.13 or later (nvm install 22)"; fi
 else fail "node is not installed" "install Node 22.13 or later"; fi
-if command -v pnpm >/dev/null 2>&1; then pass "pnpm $(pnpm --version)"; else fail "pnpm is not installed" "run: corepack enable (Node ships corepack; it picks the version in package.json)"; fi
+if command -v pnpm >/dev/null 2>&1; then pass "pnpm $(pnpm --version)"; else fail "pnpm is not installed" "run: npm install -g pnpm@12 (or corepack enable on Node 22 to 24)"; fi
 command -v curl >/dev/null 2>&1 && pass "curl" || fail "curl is not installed" "install curl"
 [ -d "$ROOT/node_modules" ] && pass "dependencies installed" || note "dependencies not installed yet; deploy.sh runs pnpm install itself"
 

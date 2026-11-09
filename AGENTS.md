@@ -24,7 +24,7 @@ PhotonRelic is a digital asset manager for images that runs entirely on Cloudfla
 ## Rules
 
 1. **Never ask for or handle a token value in the conversation.** The person creates tokens in the Cloudflare dashboard and puts them into `.env` themselves. You tell them which permissions a token needs (the table in `docs/deploy.md`, Tokens) and which variable name to use. If a token is wrong, preflight says so; you relay the message.
-2. **Run preflight before provision, and `pnpm check` before deploy.** Both create nothing. Do not skip them to save time.
+2. **Run preflight before provision, and `pnpm run check` before deploy.** Both create nothing. Do not skip them to save time.
 3. **Stop and report on any `FAIL` or API error.** Do not retry the same command hoping for a different result, and do not work around a failed check.
 4. **Never commit deployment configuration into this public repository.** Everything under `deploy/` except the example is ignored for that reason. The deployment repository is the place, and it is private.
 5. **Never edit a migration that exists, and never run SQL against the database by hand.** The deploy applies migrations.
@@ -50,7 +50,7 @@ Ask these before step 2. Everything else you can find out or decide.
 
 Each step gives the command and what a good result looks like. Run commands as written.
 
-**1. Check the machine.** `node --version` is 22.13 or later; `pnpm --version` works (if not: `corepack enable`); `git` and `curl` exist.
+**1. Check the machine.** `node --version` is 22.13 or later; `pnpm --version` is 9 or later (if missing: `npm install -g pnpm@12`); `git` and `curl` exist. In the deployment repository every command is `pnpm run <name>`: pnpm's own `setup` and `deploy` commands shadow the scripts when `run` is left out.
 
 **2. Create the deployment repository.** From this repository's root:
 
@@ -58,26 +58,26 @@ Each step gives the command and what a good result looks like. Run commands as w
 sh scripts/init-deploy-repo.sh ../<dir> --name <env> --library-host <library host> --resizer-host <resizer host> [--source <fork or mirror url>]
 ```
 
-Good: it prints `done: … is staged, not committed` and the four next commands. Then `cd ../<dir>`, show the person `environments/<env>/library.toml` and `resizer.toml`, and ask whether only their own sites may embed images; if so, uncomment `ALLOWED_ORIGINS` in `resizer.toml` and list them. Commit: `git commit -m "PhotonRelic deployment repository"`. Then `pnpm install && pnpm setup`.
+Good: it prints `done: … is staged, not committed` and the four next commands. Then `cd ../<dir>`, show the person `environments/<env>/library.toml` and `resizer.toml`, and ask whether only their own sites may embed images; if so, uncomment `ALLOWED_ORIGINS` in `resizer.toml` and list them. Commit: `git commit -m "PhotonRelic deployment repository"`. Then `pnpm run setup`.
 
 **3. Credentials.** `cp .env.example .env`. Tell the person to create the deploy token with the permissions in `docs/deploy.md` (Tokens) and to put it, the account ID and the email domains into `.env`. Wait for them to say it is done. Do not read `.env` back to them.
 
-**4. Preflight.** `pnpm preflight <env>`. Good: `preflight: N passed, 0 failed` and a `next:` line. Each `FAIL` line carries its own `fix:`; relay it and stop until it is fixed. The two `note` lines about the plan and Images are expected: ask the person to confirm them in the dashboard if they have not.
+**4. Preflight.** `pnpm run preflight <env>`. Good: `preflight: N passed, 0 failed` and a `next:` line. Each `FAIL` line carries its own `fix:`; relay it and stop until it is fixed. The two `note` lines about the plan and Images are expected: ask the person to confirm them in the dashboard if they have not.
 
-**5. Provision.** `pnpm provision <env>`. Good: `done. Next: …` after lines ending in `created` or `exists`. Then `git add environments && git commit -m "<env>: provisioned"`.
+**5. Provision.** `pnpm run provision <env>`. Good: `done. Next: …` after lines ending in `created` or `exists`. Then `git add environments && git commit -m "<env>: provisioned"`.
 
-**6. Build.** `pnpm check`. Good: two `--dry-run: exiting now.` lines and no error.
+**6. Build.** `pnpm run check`. Good: two `--dry-run: exiting now.` lines and no error.
 
-**7. Deploy.** `pnpm deploy <env>`. Good: migrations applied (or `No migrations to apply`), then `Deployed photonrelic-<env>-resizer` and `Deployed photonrelic-<env>` with their custom domains.
+**7. Deploy.** `pnpm run deploy <env>`. Good: migrations applied (or `No migrations to apply`), then `Deployed photonrelic-<env>-resizer` and `Deployed photonrelic-<env>` with their custom domains.
 
-**8. Verify.** `pnpm verify <env>`. Good: `verify: N passed, 0 failed` and `ready: sign in at https://<library host>/`. If a hostname does not answer yet, wait one minute and run it again before treating it as a failure.
+**8. Verify.** `pnpm run verify <env>`. Good: `verify: N passed, 0 failed` and `ready: sign in at https://<library host>/`. If a hostname does not answer yet, wait one minute and run it again before treating it as a failure.
 
-**9. Hand over.** Tell the person to sign in at the library's address with an email on an allowed domain, upload a folder, open a file page, and copy the markup. After that first upload, run `pnpm verify <env> --key <a filed key>` to confirm resizing and Images. Remind them to create a private GitHub repository for `<dir>` and push it.
+**9. Hand over.** Tell the person to sign in at the library's address with an email on an allowed domain, upload a folder, open a file page, and copy the markup. After that first upload, run `pnpm run verify <env> --key <a filed key>` to confirm resizing and Images. Remind them to create a private GitHub repository for `<dir>` and push it.
 
 ## Afterwards
 
-- **Add staff:** add their email domain to `ACCESS_ALLOWED_EMAIL_DOMAINS` in `.env`, run `pnpm provision <env>` again.
-- **Turn on an optional feature:** the person adds the token to `.env` (and for cache purge uncomments `CF_ZONE_ID` in `library.toml`), then `pnpm deploy <env>`.
+- **Add staff:** add their email domain to `ACCESS_ALLOWED_EMAIL_DOMAINS` in `.env`, run `pnpm run provision <env>` again.
+- **Turn on an optional feature:** the person adds the token to `.env` (and for cache purge uncomments `CF_ZONE_ID` in `library.toml`), then `pnpm run deploy <env>`.
 - **Upgrade PhotonRelic:** `docs/deploy.md`, Upgrading. Read the commits in between for a new variable before deploying.
 - **A second environment:** `docs/deploy.md`, A second environment.
 

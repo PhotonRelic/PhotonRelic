@@ -29,7 +29,7 @@ Do these once in the Cloudflare dashboard. Each is a product switch, not a confi
 | **Images** enabled | Images → Overview | The transformations the resizer uses. Without it every image is served as stored and the resizer says so in a header. |
 | **Zero Trust** enabled | Zero Trust → choose the Free plan | Access is part of Zero Trust. You pick a team name, which becomes `<team>.cloudflareaccess.com`, the login page's address. The provisioning script can create this for you if you prefer (`ACCESS_TEAM_NAME`). |
 
-On your machine: Node 22.13 or later, pnpm (run `corepack enable`; it picks the version the project names), git, and curl.
+On your machine: Node 22.13 or later, pnpm 9 or later (`npm install -g pnpm@12`; on Node 22 to 24, `corepack enable` also works), git, and curl.
 
 ## Where your copy of the code lives
 
@@ -59,7 +59,7 @@ photonrelic/                       PhotonRelic as a submodule, pinned to a commi
 environments/production/library.toml   the library Worker's configuration, names filled in
 environments/production/resizer.toml   the resizer Worker's configuration
 scripts/{preflight,provision,deploy,verify}.sh   wrappers that call PhotonRelic's scripts
-package.json                       pnpm setup / check / preflight / provision / deploy / verify
+package.json                       pnpm run setup / check / preflight / provision / deploy / verify
 .env.example                       the credentials file to copy
 README.md                          these steps, for this repository
 ```
@@ -71,8 +71,10 @@ Then:
 ```sh
 cd ../my-photonrelic-deploy
 git commit -m "PhotonRelic deployment repository"
-pnpm install && pnpm setup
+pnpm run setup
 ```
+
+The commands in this repository are always `pnpm run <name>`. pnpm has built-in commands called `setup` and `deploy`, and without `run` it runs those instead of the scripts.
 
 Create a private repository on GitHub for it and push, when you are ready. Nothing secret is in it; it is private because it is yours.
 
@@ -100,7 +102,7 @@ Set **Account Resources** to your one account and **Zone Resources** to the one 
 
 Also in `.env`: `CLOUDFLARE_ACCOUNT_ID`, and `ACCESS_ALLOWED_EMAIL_DOMAINS`, the comma-separated email domains staff sign in with (`example.com`). If the account has no Zero Trust organization yet and you want the script to create one, set `ACCESS_TEAM_NAME`.
 
-**Optional tokens**, each turning on one feature. Skip them now; add them later and run `pnpm deploy` again.
+**Optional tokens**, each turning on one feature. Skip them now; add them later and run `pnpm run deploy` again.
 
 | Variable | Token | Feature |
 | --- | --- | --- |
@@ -111,7 +113,7 @@ Also in `.env`: `CLOUDFLARE_ACCOUNT_ID`, and `ACCESS_ALLOWED_EMAIL_DOMAINS`, the
 ## Preflight
 
 ```sh
-pnpm preflight production
+pnpm run preflight production
 ```
 
 Creates nothing. Checks the machine, verifies the token, probes every permission the deploy needs and names any that is missing, confirms R2 is enabled, that a Zero Trust organization exists or can be created, that each hostname is under a zone in your account, and that the optional tokens, if present, are valid. Two things it cannot read with the deploy token: the account's plan and whether Images is enabled. It says so and names the dashboard page; verification after the deploy settles Images for certain. Fix every `FAIL` before going on.
@@ -119,7 +121,7 @@ Creates nothing. Checks the machine, verifies the token, probes every permission
 ## Provision
 
 ```sh
-pnpm provision production
+pnpm run provision production
 ```
 
 Creates, or reuses when it already exists: the Zero Trust organization (only with `ACCESS_TEAM_NAME`), the one-time PIN identity provider, the Access application for the library's hostname allowing your email domains, the bucket, its CORS rule for master uploads, and the database. It then writes the team domain, the Access audience tag, the account id, the bucket name and the database id into `library.toml`, and the database id into `resizer.toml`. Safe to run again at any time; re-run it after changing the email domains.
@@ -133,8 +135,8 @@ git add environments && git commit -m "production: provisioned"
 ## Deploy
 
 ```sh
-pnpm check                # builds both Workers without credentials; catches a broken config
-pnpm deploy production    # migrations, then the resizer, then the library
+pnpm run check                # builds both Workers without credentials; catches a broken config
+pnpm run deploy production    # migrations, then the resizer, then the library
 ```
 
 The library refuses to start until `ACCESS_AUD` is set, so a deploy before provisioning fails closed rather than open. Optional tokens found in `.env` are stored as the library Worker's secrets on every deploy.
@@ -142,7 +144,7 @@ The library refuses to start until `ACCESS_AUD` is set, so a deploy before provi
 ## Verify
 
 ```sh
-pnpm verify production
+pnpm run verify production
 ```
 
 From the outside: the resizer answers, refuses `masters/`, and its metadata API gives a clean 404 for an unknown key; the library redirects to the Access login and never answers without one. With credentials: no migration is left to apply, and the bucket's CORS rule names the library. After your first upload, run it again with `--key media/<a filed key>` and it confirms that resizing works and Images is on.
@@ -151,7 +153,7 @@ From the outside: the resizer answers, refuses `masters/`, and its metadata API 
 
 Open `https://media-admin.example.com/`, enter an address on an allowed domain, and type the PIN from the email. Upload a folder of images; the library files them under `media/` and reads any embedded description, keywords, creator and credit into the record. Every image's public URL is `https://img.example.com/<key>`; add `?w=<width>` from the resizer's menu for a size, and the file page gives you the markup.
 
-To let more people in, add their email domain to `ACCESS_ALLOWED_EMAIL_DOMAINS` and run `pnpm provision production` again; the policy is rewritten. For individual addresses outside those domains, add them to the Access application's policy in the dashboard (Zero Trust → Access → Applications), knowing that the next provision run rewrites the domains and keeps nothing else.
+To let more people in, add their email domain to `ACCESS_ALLOWED_EMAIL_DOMAINS` and run `pnpm run provision production` again; the policy is rewritten. For individual addresses outside those domains, add them to the Access application's policy in the dashboard (Zero Trust → Access → Applications), knowing that the next provision run rewrites the domains and keeps nothing else.
 
 Before uploading a shoot, the command-line prep tool in `tools/` fixes names, keeps the descriptive metadata and strips location and device identifiers; see the README.
 
@@ -165,8 +167,8 @@ In the deployment repository, copy `environments/production/` to `environments/s
 git -C photonrelic fetch origin
 git -C photonrelic log --oneline HEAD..origin/master      # what is new
 git -C photonrelic checkout <commit>
-pnpm setup && pnpm check
-pnpm deploy production && pnpm verify production
+pnpm run setup && pnpm run check
+pnpm run deploy production && pnpm run verify production
 git add photonrelic && git commit -m "production: PhotonRelic <commit>"
 ```
 
@@ -178,14 +180,14 @@ Read the commits between the two for anything that asks for a new variable or bi
 | --- | --- | --- |
 | `Worker exceeded CPU time limit` (error 1102) on thumbnails | The account is on the Workers Free plan | Move to Workers Paid, then deploy the resizer again: a running version keeps the limit it was deployed with. |
 | The library answers 500 at every URL | `ACCESS_AUD` is a placeholder, or one half of an optional token pair is set | Run provision, then deploy again; set both R2 variables or neither. |
-| `still has REPLACE_ placeholders` from the deploy | Provisioning has not run | `pnpm provision <env>`. |
+| `still has REPLACE_ placeholders` from the deploy | Provisioning has not run | `pnpm run provision <env>`. |
 | Preflight: `token lacks …` | The token is missing that permission | Edit the token and add exactly the permission named. |
 | Preflight: `… is not under a zone this token can see` | The domain is not in this account, or the token's zone resources exclude it | Add the domain as a zone, or widen the token's Zone Resources to it. |
 | Verify: `served as stored: x-media-transform: unavailable` | Images is not enabled | Enable Images; no redeploy needed. |
-| Master upload fails in the browser with a CORS error | The bucket's CORS rule does not name the library's origin | `pnpm provision <env>` sets it. |
+| Master upload fails in the browser with a CORS error | The bucket's CORS rule does not name the library's origin | `pnpm run provision <env>` sets it. |
 | Replace says the same bytes are already at this key | The new file is identical to the stored one | Nothing to do; upload a different file or leave it. |
 | Nothing answers at a hostname right after the first deploy | The custom domain's DNS record is still propagating | Wait a minute and verify again. |
-| The library shows "not configured" for usage or masters | The optional token is not in `.env` | Add it and run `pnpm deploy <env>`; the deploy stores it. |
+| The library shows "not configured" for usage or masters | The optional token is not in `.env` | Add it and run `pnpm run deploy <env>`; the deploy stores it. |
 
 ## What it costs
 

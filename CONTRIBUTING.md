@@ -14,8 +14,8 @@ is small; when in doubt, open an issue and ask.
 
 ## Working on it
 
-You need Node 22.13 or later and pnpm (`corepack enable` picks the right
-version from `package.json`).
+You need Node 22.13 or later and pnpm 9 or later (`npm install -g pnpm@12`;
+pnpm then switches itself to the version `package.json` names).
 
 ```sh
 pnpm install
