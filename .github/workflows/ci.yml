@@ -30,6 +30,8 @@ jobs:
       # workflow needs no third-party action and the repository's Actions
       # policy can stay at GitHub-owned and verified creators only. It runs
       # before setup-node, which looks for pnpm to set up the store cache.
+      # Corepack ships with Node 22 to 24 only; when node-version moves past
+      # 24, replace this with `npm install -g pnpm@<version in package.json>`.
       - run: corepack enable
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:

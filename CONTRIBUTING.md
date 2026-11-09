@@ -14,8 +14,8 @@ is small; when in doubt, open an issue and ask.
 
 ## Working on it
 
-You need Node 22.13 or later and pnpm (`corepack enable` picks the right
-version from `package.json`).
+You need Node 22.13 or later and pnpm 9 or later (`npm install -g pnpm@12`;
+pnpm then switches itself to the version `package.json` names).
 
 ```sh
 pnpm install
@@ -42,6 +42,15 @@ runs on every pull request.
 - Do not include deployment details (hostnames, account or database ids,
   Access tags) in code, tests or messages. Everything under `deploy/` except
   the example is ignored for that reason.
+
+## Working from a fork
+
+Fork the repository on GitHub, branch from `master` in your fork, and open
+the pull request from that branch. Keep the fork current with GitHub's
+**Sync fork** button or `git fetch upstream && git merge --ff-only
+upstream/master` before you branch. A fork of a public repository is public,
+so your deployment configuration never goes in it: `docs/deploy.md` describes
+the private deployment repository that points at your fork as a submodule.
 
 ## License
 
