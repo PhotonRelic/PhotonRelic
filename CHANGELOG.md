@@ -25,6 +25,10 @@ Within a version, **Operators must do** comes first whenever there is something 
 - Master links keep to an allowlist of schemes (web, cloud stores, network shares); a `javascript:` or `data:` link is refused when saved.
 - The raw preview serves the content type the key's extension implies, inline and sandboxed, whatever type the object was stored with.
 - A Rescan takes a lock, so two cannot walk the bucket and rebuild the search index at once; a lock older than fifteen minutes is taken over. A search page number is bounded.
+- Resizer: the edge cache key is now built from the key and the parsed parameters, not from the request URL, so every accepted spelling of a request lands on one cache entry and the library's purge after a Replace, Delete or focal-point change covers everything the edge may hold. Alongside it, the resizer is stricter about spellings: a width must be written as it appears on the menu (`w=320`, not `w=0320` or `w=3.2e2`) and a parameter given twice is a 400. Before, each such spelling was a cache miss that ran a fresh transform, which the fixed menu was meant to rule out.
+- Resizer: `SERVED_PREFIXES` refuses `masters/`, `api/` and `healthz/`, and the metadata API's listing never includes `masters/` whatever the configuration says.
+- Resizer: a served object's `Content-Type` comes from the key's extension unless the stored type is an image type other than SVG, so a non-image body written under an image key by other means is never served as a document.
+- Resizer: the metadata API no longer describes a key whose rights have expired, so it agrees with the image's 410 before the nightly run retires the row; a `prefix` parameter is validated like a key, and the error for a bad prefix no longer lists the configured prefixes.
 
 ### Security
 

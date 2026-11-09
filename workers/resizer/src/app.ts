@@ -17,10 +17,11 @@
 import {
   MAX_TRANSFORM_SOURCE_BYTES,
   MEDIA_MIME,
-  type MediaOutputFormat,
   type MediaTransformParams,
+  mediaUrl,
   parseMediaParams,
   type ResizeMenu,
+  transformUrl,
 } from '@photonrelic/media-params';
 import { type Context, Hono } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
@@ -29,7 +30,7 @@ import type { Db } from './db.js';
 import { decideEmbed, type EmbedPolicy, pageIsOn } from './embed.js';
 import { isExpired } from './expiry.js';
 import { type ImageTransformer, TransformFailed } from './images.js';
-import { isServableKey, type MediaSource } from './source.js';
+import { isServableKey, type MediaSource, servedContentType } from './source.js';
 import type { UsagePoint, UsageSink } from './usage.js';
 
 export interface ResizerDeps {
@@ -103,17 +104,25 @@ function apiError(c: Context, status: ContentfulStatusCode, code: ErrorCode, mes
 }
 
 /**
- * The edge cache key for a resize: the request URL with `f` set to the format
- * actually produced and the query sorted, so `f=auto` is cached per format,
- * not per Accept header, and parameter order does not matter. The library's
- * purge after a replace or delete enumerates these (`variantUrls` in
- * media-params), so the two must agree exactly.
+ * The edge cache key for a resize: built from the validated key and the parsed
+ * parameters, with `f` the format actually produced, never from the request
+ * URL. So `f=auto` is cached per format, not per Accept header, and every
+ * spelling of a request the menu accepts (parameter order, percent-encoding
+ * in the path) lands on one entry. The library's purge after a replace or
+ * delete enumerates these (`variantUrls` in media-params), so the two must
+ * agree exactly; a test holds them together.
  */
-export function transformCacheKey(requestUrl: string, resolved: MediaOutputFormat): string {
-  const keyUrl = new URL(requestUrl);
-  keyUrl.searchParams.set('f', resolved);
-  keyUrl.searchParams.sort();
-  return keyUrl.toString();
+export function transformCacheKey(
+  origin: string,
+  key: string,
+  params: MediaTransformParams,
+): string {
+  return transformUrl(origin, key, params);
+}
+
+/** The edge cache key for the object as stored: its canonical URL, no query. */
+export function storedCacheKey(origin: string, key: string): string {
+  return mediaUrl(origin, key);
 }
 
 /** Run work after the response when the runtime allows it; await it otherwise (tests). */
@@ -193,30 +202,31 @@ export function createApp(deps: ResizerDeps) {
 
   /** Serve an object as stored. */
   const serve = async (c: Context, key: string) => {
-    const { cache, cacheKey } = cacheFor(new URL(c.req.url).toString());
+    const { cache, cacheKey } = cacheFor(storedCacheKey(new URL(c.req.url).origin, key));
     const hit = await cache?.match(cacheKey);
     if (hit) return notedHit(c, key, hit, null);
     const state = await expiry(c, key);
     if (state instanceof Response) return state;
     const object = await deps.source.get(key);
     if (!object) return apiError(c, 404, 'NOT_FOUND', 'No such media');
+    const contentType = servedContentType(key, object.contentType);
     const res = new Response(object.body, {
       status: 200,
       headers: {
         ...HEADERS,
-        'content-type': object.contentType,
+        'content-type': contentType,
         'content-length': String(object.size),
         'cache-control': state === 'live' ? CACHE_STORED : CACHE_STAFF_ONLY,
       },
     });
     if (cache && state === 'live') void background(c, cache.put(cacheKey, res.clone()));
-    note(c, { key, kind: 'stored', format: object.contentType, cache: 'miss', bytes: object.size });
+    note(c, { key, kind: 'stored', format: contentType, cache: 'miss', bytes: object.size });
     return res;
   };
 
   /** Serve an object resized; falls back to the stored object when it cannot be. */
   const serveTransformed = async (c: Context, key: string, params: MediaTransformParams) => {
-    const { cache, cacheKey } = cacheFor(transformCacheKey(c.req.url, params.resolved));
+    const { cache, cacheKey } = cacheFor(transformCacheKey(new URL(c.req.url).origin, key, params));
     const hit = await cache?.match(cacheKey);
     if (hit) return notedHit(c, key, hit, params.resolved);
     const state = await expiry(c, key);
@@ -239,11 +249,12 @@ export function createApp(deps: ResizerDeps) {
         ? 'too-large'
         : null;
     if (reason || !images) {
+      const contentType = servedContentType(key, object.contentType);
       res = new Response(object.body, {
         status: 200,
         headers: {
           ...headers,
-          'content-type': object.contentType,
+          'content-type': contentType,
           'content-length': String(object.size),
           'x-media-transform': reason ?? 'unavailable',
         },
@@ -252,7 +263,7 @@ export function createApp(deps: ResizerDeps) {
       point = {
         key,
         kind: 'stored',
-        format: object.contentType,
+        format: contentType,
         cache: 'miss',
         bytes: object.size,
       };

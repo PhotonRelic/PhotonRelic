@@ -150,6 +150,8 @@ export interface MediaTransformParams {
   width: number;
   /** Set only with an aspect ratio: a cover crop to width x height. */
   height?: number;
+  /** The aspect ratio as it appears on the menu (`4:3`), set only with a crop. */
+  aspect?: string;
   fit: 'scale-down' | 'cover';
   /** As requested, `auto` included; `resolved` is what will be produced. */
   format: MediaFormat;
@@ -163,7 +165,14 @@ export type MediaParamsResult =
 
 const PARAM_KEYS = new Set(['w', 'ar', 'f']);
 
-/** Parse the resize parameters from a request URL. `accept` is the request's Accept header. */
+/**
+ * Parse the resize parameters from a request URL. `accept` is the request's
+ * Accept header. Strict on purpose: every accepted request must have exactly
+ * one spelling, because the edge caches one entry per transform and the
+ * library's purge enumerates those entries. A parameter given twice, a width
+ * written any way but as it appears on the menu (`0320`, `3.2e2`), or a name
+ * off the menu is an error, not a near miss.
+ */
 export function parseMediaParams(
   url: URL,
   accept: string | null,
@@ -173,6 +182,11 @@ export function parseMediaParams(
   if (keys.length === 0) return { kind: 'none' };
   const unknown = keys.filter((k) => !PARAM_KEYS.has(k));
   if (unknown.length) return { kind: 'error', message: `Unknown parameter: ${unknown[0]}` };
+  const seen = new Set<string>();
+  for (const k of keys) {
+    if (seen.has(k)) return { kind: 'error', message: `${k} is given more than once` };
+    seen.add(k);
+  }
 
   const wRaw = url.searchParams.get('w');
   const arRaw = url.searchParams.get('ar');
@@ -188,10 +202,11 @@ export function parseMediaParams(
     // f alone: a format change at the source size is not on the menu.
     return { kind: 'error', message: 'f needs w' };
   }
-  const width = Number(wRaw);
-  if (!menu.widths.includes(width)) {
+  // Matched as text, so only the menu's own spelling of a width is accepted.
+  if (!menu.widths.some((w) => String(w) === wRaw)) {
     return { kind: 'error', message: `w must be one of ${menu.widths.join(', ')}` };
   }
+  const width = Number(wRaw);
 
   let height: number | undefined;
   let fit: 'scale-down' | 'cover' = 'scale-down';
@@ -212,7 +227,24 @@ export function parseMediaParams(
     resolved: format === 'auto' ? negotiateFormat(accept) : format,
   };
   if (height !== undefined) params.height = height;
+  if (arRaw !== null) params.aspect = arRaw;
   return { kind: 'transform', params };
+}
+
+/**
+ * The one URL a transform is cached under at the edge: the key encoded per
+ * segment, then `ar`, `f` and `w` in that order, with `f` the format actually
+ * produced. Built from the parsed parameters, never from the request, so every
+ * spelling of a request that the menu accepts lands on the same entry, and
+ * `variantUrls` lists exactly these.
+ */
+export function transformUrl(origin: string, key: string, params: MediaTransformParams): string {
+  const u = new URL(mediaUrl(origin, key));
+  u.searchParams.set('w', String(params.width));
+  if (params.aspect !== undefined) u.searchParams.set('ar', params.aspect);
+  u.searchParams.set('f', params.resolved);
+  u.searchParams.sort();
+  return u.toString();
 }
 
 /** avif if the client accepts it, else webp, else jpeg. */

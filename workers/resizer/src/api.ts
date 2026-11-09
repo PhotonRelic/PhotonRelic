@@ -14,7 +14,15 @@
  */
 import type { AssetRecord } from '@photonrelic/media-params';
 import type { Db } from './db.js';
+import { todayIso } from './expiry.js';
 import { MASTERS_PREFIX } from './source.js';
+
+/**
+ * A key whose rights have run out answers 410 as an image, so the API does not
+ * describe it either; the two agree whether or not the library's nightly run
+ * has retired the row yet.
+ */
+const NOT_EXPIRED = '(expires_at IS NULL OR expires_at >= ?TODAY)';
 
 export const DEFAULT_LIMIT = 100;
 export const MAX_LIMIT = 500;
@@ -106,10 +114,28 @@ export function isUnderPrefix(key: string, prefixes: readonly string[]): boolean
   );
 }
 
-export async function getAsset(db: Db, key: string): Promise<AssetRecord | null> {
+/**
+ * What a `prefix` query may be made of: the characters a key may hold, so the
+ * range query below is always well formed. A key itself may hold more (the
+ * library files whatever the bucket has), which is why the single-key route
+ * checks only the prefix.
+ */
+const PREFIX_PARAM = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+
+export function isPrefixParam(prefix: string, prefixes: readonly string[]): boolean {
+  return PREFIX_PARAM.test(prefix) && isUnderPrefix(prefix, prefixes);
+}
+
+export async function getAsset(
+  db: Db,
+  key: string,
+  today = todayIso(),
+): Promise<AssetRecord | null> {
   const r = await db
-    .prepare(`SELECT ${COLUMNS} FROM assets WHERE key = ?1 AND retired = 0`)
-    .bind(key)
+    .prepare(
+      `SELECT ${COLUMNS} FROM assets WHERE key = ?1 AND retired = 0 AND ${NOT_EXPIRED.replace('?TODAY', '?2')}`,
+    )
+    .bind(key, today)
     .first<Row>();
   return r ? fromRow(r) : null;
 }
@@ -137,8 +163,8 @@ export function parseListQuery(
   if (unknown !== undefined) return { kind: 'error', message: `Unknown parameter: ${unknown}` };
 
   const prefix = params.get('prefix');
-  if (prefix !== null && !isUnderPrefix(prefix, prefixes)) {
-    return { kind: 'error', message: `prefix must be under ${prefixes.join(', ')}` };
+  if (prefix !== null && !isPrefixParam(prefix, prefixes)) {
+    return { kind: 'error', message: 'prefix must be under a served prefix' };
   }
 
   let limit = DEFAULT_LIMIT;
@@ -172,7 +198,10 @@ export function parseListQuery(
 function prefixRange(prefix: string): [string, string] {
   const chars = [...prefix];
   const last = chars.pop() ?? '';
-  const upper = `${chars.join('')}${String.fromCodePoint((last.codePointAt(0) ?? 0) + 1)}`;
+  const code = last.codePointAt(0) ?? 0;
+  // The last code point cannot be stepped up: the bound is the prefix with the highest code point after it.
+  const upper =
+    code >= 0x10ffff ? `${prefix}\u{10FFFF}` : `${chars.join('')}${String.fromCodePoint(code + 1)}`;
   return [prefix, upper];
 }
 
@@ -180,10 +209,16 @@ export async function listAssets(
   db: Db,
   q: ListQuery,
   prefixes: readonly string[],
+  today = todayIso(),
 ): Promise<{ assets: AssetRecord[]; cursor: string | null }> {
-  const where: string[] = ['retired = 0'];
-  const args: unknown[] = [];
-  const ranges = (q.prefix === null ? prefixes : [q.prefix]).map((p) => {
+  const args: unknown[] = [today];
+  const where: string[] = ['retired = 0', NOT_EXPIRED.replace('?TODAY', '?1')];
+  // Masters are never listed, whatever the configuration says.
+  const roots = (q.prefix === null ? prefixes : [q.prefix]).filter(
+    (p) => !p.startsWith(MASTERS_PREFIX),
+  );
+  if (roots.length === 0) return { assets: [], cursor: null };
+  const ranges = roots.map((p) => {
     const [lo, hi] = prefixRange(p);
     args.push(lo, hi);
     return `(key >= ?${args.length - 1} AND key < ?${args.length})`;

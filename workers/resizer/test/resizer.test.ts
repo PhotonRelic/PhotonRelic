@@ -15,6 +15,7 @@ import {
   CACHE_STORED,
   CACHE_TRANSFORMED,
   createApp,
+  storedCacheKey,
   transformCacheKey,
 } from '../src/app.js';
 import type { Db, DbStatement } from '../src/db.js';
@@ -33,7 +34,12 @@ import {
   TransformFailed,
   type TransformOptions,
 } from '../src/images.js';
-import { isServableKey, MemoryMediaSource, parsePrefixes } from '../src/source.js';
+import {
+  isServableKey,
+  MemoryMediaSource,
+  parsePrefixes,
+  servedContentType,
+} from '../src/source.js';
 import { AnalyticsEngineUsageSink, type UsagePoint, type UsageSink } from '../src/usage.js';
 import { SqliteDb } from './sqlite.js';
 
@@ -600,6 +606,18 @@ describe('masters are never served', () => {
     expect(parseListQuery(new URLSearchParams('prefix=masters/'), ['masters/']).kind).toBe('error');
     expect((await h.get('/media/workshop/bench.jpg')).status).toBe(200);
   });
+
+  it('never lists masters, even when a configuration names them as a prefix', async () => {
+    const db = new SqliteDb();
+    file(db, 'media/workshop/bench.jpg');
+    file(db, 'masters/workshop/bench.psd');
+    // parsePrefixes would refuse this; the listing refuses it on its own too.
+    const h = harness({ db, prefixes: ['media/', 'masters/'] });
+    const body = await json(await h.get('/api/v1/assets'));
+    expect(body.assets?.map((a) => a.key)).toEqual(['media/workshop/bench.jpg']);
+    const only = harness({ db, prefixes: ['masters/'] });
+    expect((await json(await only.get('/api/v1/assets'))).assets).toEqual([]);
+  });
 });
 
 describe('metadata API', () => {
@@ -835,14 +853,41 @@ describe('metadata API', () => {
       'cursor=not%20base64',
       'cursor=gA',
       'q=chair',
+      // Characters a key may not hold, including the last code point, which has no successor.
+      'prefix=media%2F%F4%8F%BF%BF',
+      'prefix=media%2Fa%20b',
+      'prefix=media%2F%27',
     ]) {
       const res = await h.get(`/api/v1/assets?${q}`);
       expect(res.status, q).toBe(400);
       const body = await json(res);
       expect(body.error?.code, q).toBe('BAD_REQUEST');
       expect(res.headers.get('cache-control')).toBe('no-store');
+      // The answer names no configured prefix.
+      expect(body.error?.message).not.toContain('media/');
     }
     expect((await h.get('/api/v1/assets?limit=500')).status).toBe(200);
+  });
+
+  it('does not describe a key whose rights have expired, retired yet or not', async () => {
+    const db = filed();
+    file(db, 'media/workshop/gone.jpg');
+    file(db, 'media/workshop/soon.jpg');
+    db.raw
+      .prepare('UPDATE assets SET expires_at = ? WHERE key = ?')
+      .run('2026-10-01', 'media/workshop/gone.jpg');
+    db.raw
+      .prepare('UPDATE assets SET expires_at = ? WHERE key = ?')
+      .run('2099-01-01', 'media/workshop/soon.jpg');
+    const h = harness({ db });
+    expect((await h.get('/api/v1/assets/media/workshop/gone.jpg')).status).toBe(404);
+    expect((await h.get('/api/v1/assets/media/workshop/soon.jpg')).status).toBe(200);
+    const listed = (await json(await h.get('/api/v1/assets'))).assets?.map((a) => a.key);
+    expect(listed).toContain('media/workshop/soon.jpg');
+    expect(listed).toContain(KEY);
+    expect(listed).not.toContain('media/workshop/gone.jpg');
+    // The image route agrees: 410 for the same key.
+    expect((await h.get('/media/workshop/gone.jpg')).status).toBe(410);
   });
 
   it('round-trips any key through the cursor', () => {
@@ -862,6 +907,16 @@ describe('configuration', () => {
     expect(() => parsePrefixes('media')).toThrow();
     expect(() => parsePrefixes('../x/')).toThrow();
     expect(() => parsePrefixes(' , ')).toThrow();
+  });
+
+  it('refuses the reserved folders as served prefixes', () => {
+    expect(() => parsePrefixes('media/, masters/')).toThrow(/masters\/ is reserved/);
+    expect(() => parsePrefixes('masters/psi/')).toThrow(/reserved/);
+    expect(() => parsePrefixes('api/')).toThrow(/reserved/);
+    expect(() => parsePrefixes('api/v1/')).toThrow(/reserved/);
+    expect(() => parsePrefixes('healthz/')).toThrow(/reserved/);
+    // A folder that merely starts with the same letters is fine.
+    expect(parsePrefixes('mastersof/, apiary/')).toEqual(['mastersof/', 'apiary/']);
   });
 
   it('accepts only image keys under a prefix', () => {
@@ -1003,7 +1058,7 @@ describe('the cache key and the library purge agree', () => {
             const parsed = parseMediaParams(url, accept, menu);
             expect(parsed.kind).toBe('transform');
             if (parsed.kind !== 'transform') continue;
-            const cacheKey = transformCacheKey(url.toString(), parsed.params.resolved);
+            const cacheKey = transformCacheKey(origin, key, parsed.params);
             expect(listed.has(cacheKey)).toBe(true);
             seen.add(cacheKey);
           }
@@ -1011,7 +1066,80 @@ describe('the cache key and the library purge agree', () => {
       }
     }
     // The stored object is cached under its bare URL, which the purge lists first.
-    seen.add(new URL(`${origin}/${key}`).toString());
+    seen.add(storedCacheKey(origin, key));
     expect([...listed].sort()).toEqual([...seen].sort());
+  });
+
+  it('is built from the key and the parsed parameters, not from the request URL', () => {
+    const origin = 'https://img.example.com';
+    const key = 'media/workshop/bench.jpg';
+    const canonical = `${origin}/media/workshop/bench.jpg?ar=16%3A9&f=webp&w=320`;
+    for (const spelling of [
+      '?w=320&ar=16:9&f=webp',
+      '?f=webp&ar=16%3A9&w=320',
+      '?ar=16:9&w=320&f=auto',
+    ]) {
+      const parsed = parseMediaParams(new URL(`${origin}/${key}${spelling}`), 'image/webp');
+      expect(parsed.kind).toBe('transform');
+      if (parsed.kind !== 'transform') continue;
+      expect(transformCacheKey(origin, key, parsed.params)).toBe(canonical);
+    }
+    // A percent-encoded path decodes to the same key, so it shares the entry.
+    expect(storedCacheKey(origin, key)).toBe(`${origin}/media/workshop/bench.jpg`);
+    expect(variantUrls(origin, key)[0]).toBe(storedCacheKey(origin, key));
+  });
+
+  it('refuses every spelling of a width but the menu’s own, and a parameter given twice', async () => {
+    const h = harness();
+    for (const q of ['w=0320', 'w=00320', 'w=3.2e2', 'w=320.0', 'w=%2B320', 'w=%20320']) {
+      const res = await h.get(`/media/workshop/bench.jpg?${q}`);
+      expect(res.status, q).toBe(400);
+      expect((await json(res)).error?.code).toBe('BAD_MEDIA_PARAMS');
+    }
+    for (const q of ['w=320&w=480', 'w=320&w=zzz', 'w=320&f=webp&f=webp', 'w=320&ar=1:1&ar=4:3']) {
+      const res = await h.get(`/media/workshop/bench.jpg?${q}`);
+      expect(res.status, q).toBe(400);
+      expect((await json(res)).error?.message).toMatch(/more than once/);
+    }
+    expect((await h.get('/media/workshop/bench.jpg?w=320')).status).toBe(200);
+    // A bare `?` is no query at all: the object as stored.
+    const bare = await h.get('/media/workshop/bench.jpg?');
+    expect(bare.status).toBe(200);
+    expect(bare.headers.get('cache-control')).toBe(CACHE_STORED);
+    // A percent-encoded path serves the same object.
+    expect((await h.get('/media/workshop/%62ench.jpg?w=320')).status).toBe(200);
+  });
+});
+
+describe('content type of a served object', () => {
+  it('comes from the key when the stored type is not an image type', async () => {
+    const h = harness();
+    h.source.put('media/planted/page.jpg', png(), 'text/html');
+    h.source.put('media/planted/vector.png', png(), 'image/svg+xml');
+    h.source.put('media/planted/untyped.webp', png(), 'application/octet-stream');
+    h.source.put('media/planted/real.jpg', png(), 'image/png');
+    expect((await h.get('/media/planted/page.jpg')).headers.get('content-type')).toBe('image/jpeg');
+    expect((await h.get('/media/planted/vector.png')).headers.get('content-type')).toBe(
+      'image/png',
+    );
+    expect((await h.get('/media/planted/untyped.webp')).headers.get('content-type')).toBe(
+      'image/webp',
+    );
+    // A stored image type other than SVG is kept even when it disagrees with the extension.
+    expect((await h.get('/media/planted/real.jpg')).headers.get('content-type')).toBe('image/png');
+    // The stored fallback of the transform route goes out the same way.
+    const noImages = harness({ images: false });
+    noImages.source.put('media/planted/page.jpg', png(), 'text/html');
+    const res = await noImages.get('/media/planted/page.jpg?w=320');
+    expect(res.headers.get('x-media-transform')).toBe('unavailable');
+    expect(res.headers.get('content-type')).toBe('image/jpeg');
+  });
+
+  it('servedContentType trusts only image types, never SVG', () => {
+    expect(servedContentType('media/a.jpg', 'text/html; charset=utf-8')).toBe('image/jpeg');
+    expect(servedContentType('media/a.JPEG', null)).toBe('image/jpeg');
+    expect(servedContentType('media/a.gif', 'image/svg+xml')).toBe('image/gif');
+    expect(servedContentType('media/a.avif', 'IMAGE/AVIF')).toBe('image/avif');
+    expect(servedContentType('media/a.webp', 'image/png')).toBe('image/png');
   });
 });

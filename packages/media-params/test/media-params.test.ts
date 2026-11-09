@@ -10,6 +10,7 @@ import {
   parseMediaParams,
   pictureMarkup,
   srcset,
+  transformUrl,
   USAGE_INDEX_MAX_BYTES,
   usageIndex,
   variantUrls,
@@ -34,8 +35,45 @@ describe('parseMediaParams', () => {
     const r = parseMediaParams(u('?w=320&ar=4:3&f=jpeg'), null);
     expect(r).toEqual({
       kind: 'transform',
-      params: { width: 320, height: 240, fit: 'cover', format: 'jpeg', resolved: 'jpeg' },
+      params: {
+        width: 320,
+        height: 240,
+        aspect: '4:3',
+        fit: 'cover',
+        format: 'jpeg',
+        resolved: 'jpeg',
+      },
     });
+  });
+
+  it('accepts one spelling of each parameter and nothing else', () => {
+    for (const q of ['?w=0320', '?w=00320', '?w=3.2e2', '?w=320.0', '?w=%2B320', '?w=%20320']) {
+      expect(parseMediaParams(u(q), null).kind, q).toBe('error');
+    }
+    for (const q of ['?w=320&w=480', '?w=320&w=320', '?w=320&f=webp&f=webp']) {
+      expect(parseMediaParams(u(q), null)).toEqual({
+        kind: 'error',
+        message: expect.stringMatching(/more than once/),
+      });
+    }
+    expect(parseMediaParams(u('?'), null)).toEqual({ kind: 'none' });
+    expect(parseMediaParams(u('?w=320'), null).kind).toBe('transform');
+  });
+
+  it('builds the one cache URL for a transform, the way variantUrls spells it', () => {
+    const origin = 'https://img.example.com';
+    const key = 'media/workshop/bench.jpg';
+    const parsed = parseMediaParams(u('?f=auto&ar=16:9&w=320'), 'image/avif');
+    expect(parsed.kind).toBe('transform');
+    if (parsed.kind !== 'transform') return;
+    const url = transformUrl(origin, key, parsed.params);
+    expect(url).toBe(`${origin}/media/workshop/bench.jpg?ar=16%3A9&f=avif&w=320`);
+    expect(variantUrls(origin, key)).toContain(url);
+    const plain = parseMediaParams(u('?w=768'), null);
+    if (plain.kind !== 'transform') throw new Error('expected a transform');
+    expect(transformUrl(origin, key, plain.params)).toBe(
+      `${origin}/media/workshop/bench.jpg?f=jpeg&w=768`,
+    );
   });
 
   it('refuses anything off the menu', () => {
