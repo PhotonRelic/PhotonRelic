@@ -58,7 +58,26 @@ is_env_name "$ENVNAME" || die "the environment directory name must be lowercase 
 LIB="$ENV_DIR/library.toml"; RES="$ENV_DIR/resizer.toml"
 # The bootstrap token moves into a shell variable and out of the environment,
 # so no child process (curl, node, git) inherits it.
-BOOT=${CLOUDFLARE_BOOTSTRAP_TOKEN:?set CLOUDFLARE_BOOTSTRAP_TOKEN in the environment (a token with Account API Tokens Edit); this script never writes it to a file}
+BOOT=${CLOUDFLARE_BOOTSTRAP_TOKEN:-}
+if [ -z "$BOOT" ]; then
+  cat >&2 <<'HOWTO'
+mint-tokens: CLOUDFLARE_BOOTSTRAP_TOKEN is not set. Put the bootstrap token in the environment first, without
+echo and without touching your shell history:
+  read -rs CLOUDFLARE_BOOTSTRAP_TOKEN && export CLOUDFLARE_BOOTSTRAP_TOKEN
+
+To make the bootstrap token (once; it takes two minutes):
+  1. Open this link signed in to Cloudflare. It opens the account token form with the one permission filled in:
+     https://dash.cloudflare.com/?to=/:account/api-tokens&permissionGroupKeys=%5B%7B%22key%22%3A%22account_api_tokens%22%2C%22type%22%3A%22edit%22%7D%5D&name=PhotonRelic%20bootstrap
+     By hand instead: Manage Account → Account API Tokens → Create Token → Create Custom Token,
+     one permission row: Account · Account API Tokens · Edit.
+  2. Account Resources: Include → your one account. No zone permission is needed.
+  3. TTL: today to tomorrow. Client IP Address Filtering: your IP, if you know it.
+  4. Continue to summary → Create Token. Copy the token; it is shown once.
+  It must be an account-owned token (made under Manage Account, not My Profile), so that it can be
+  deleted when you are done (--retire-bootstrap). A My Profile token is refused.
+HOWTO
+  exit 2
+fi
 unset CLOUDFLARE_BOOTSTRAP_TOKEN
 case "$BOOT" in *[!A-Za-z0-9_-]*) die "CLOUDFLARE_BOOTSTRAP_TOKEN does not look like an API token" ;; esac
 : "${CLOUDFLARE_ACCOUNT_ID:?set CLOUDFLARE_ACCOUNT_ID (environment or ./.env)}"

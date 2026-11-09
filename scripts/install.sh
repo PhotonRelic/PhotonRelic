@@ -120,6 +120,24 @@ run_step() {
     exit 1
   fi
 }
+# bootstrap_howto -> how to make the one token the minting path needs. The link
+# opens the account token form with the permission pre-filled (Cloudflare's
+# template URL format); the rest is the account, the expiry and your IP.
+BOOTSTRAP_TEMPLATE_URL='https://dash.cloudflare.com/?to=/:account/api-tokens&permissionGroupKeys=%5B%7B%22key%22%3A%22account_api_tokens%22%2C%22type%22%3A%22edit%22%7D%5D&name=PhotonRelic%20bootstrap'
+bootstrap_howto() {
+  say ""
+  say "To make the bootstrap token (once; it takes two minutes):"
+  say "  1. Open this link signed in to Cloudflare. It opens the account token form with the one permission filled in:"
+  say "     $BOOTSTRAP_TEMPLATE_URL"
+  say "     By hand instead: Manage Account → Account API Tokens → Create Token → Create Custom Token,"
+  say "     one permission row: Account · Account API Tokens · Edit."
+  say "  2. Account Resources: Include → your one account. No zone permission is needed."
+  say "  3. TTL: today to tomorrow. Client IP Address Filtering: your IP, if you know it."
+  say "  4. Continue to summary → Create Token. Copy the token; it is shown once. Paste it here."
+  say "  It must be an account-owned token (made under Manage Account, not My Profile), so that it can be"
+  say "  deleted when the install is done (--retire-bootstrap). A My Profile token is refused."
+  say ""
+}
 # bootstrap_reminder -> the bootstrap token can mint anything; never let it be forgotten
 bootstrap_reminder() {
   [ "$MINT" = true ] && [ "$BOOTSTRAP_RETIRED" = false ] || return 0
@@ -260,8 +278,9 @@ else
     say "the deploy token will be minted from the bootstrap token"
     CLOUDFLARE_API_TOKEN=""
     if [ -z "$BOOT" ]; then
+      bootstrap_howto
       have_tty || die "no terminal to ask for the bootstrap token: set CLOUDFLARE_BOOTSTRAP_TOKEN in the environment (read -rs CLOUDFLARE_BOOTSTRAP_TOKEN && export CLOUDFLARE_BOOTSTRAP_TOKEN keeps it out of your history)"
-      printf 'Bootstrap token (not shown; an account-owned token from Manage Account → Account API Tokens with Account API Tokens → Edit): ' >/dev/tty
+      printf 'Bootstrap token (not shown): ' >/dev/tty
       ECHO_OFF=true; stty -echo </dev/tty
       read -r BOOT </dev/tty || BOOT=""
       stty echo </dev/tty; ECHO_OFF=false
