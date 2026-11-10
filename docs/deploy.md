@@ -96,7 +96,12 @@ pnpm run setup
 
 The commands in this repository are always `pnpm run <name>`. pnpm has built-in commands called `setup` and `deploy`, and without `run` it runs those instead of the scripts.
 
-Create a private repository on GitHub for it and push, when you are ready. Nothing secret is in it; it is private because it is yours.
+Give it a private remote when you are ready, or not at all. Nothing secret is in it (`.env` is ignored), and nothing in it is irreplaceable: the installer recreates it against the same resources in minutes, since provisioning finds what already exists. A remote buys you a second machine, a second person, and a history of when the pin moved. If you want one, make it private from the first command and check that it is:
+
+```sh
+gh repo create <owner>/<name> --private --source . --push
+gh repo view <owner>/<name> --json visibility --jq .visibility     # PRIVATE
+```
 
 ## Tokens
 
