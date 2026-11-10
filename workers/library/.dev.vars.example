@@ -1,3 +1,5 @@
 # Copy to .dev.vars for `pnpm dev`. Local development has no Access in front,
-# so every request is treated as this identity.
+# so every request to localhost is treated as this identity; requests to any
+# other hostname get none. The Worker refuses to start with neither ACCESS_AUD
+# nor DEV_IDENTITY, and wrangler never deploys this file.
 DEV_IDENTITY=you@example.com

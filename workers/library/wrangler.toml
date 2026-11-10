@@ -3,8 +3,9 @@
 #
 # Access: put the hostname behind a Cloudflare Access application and set
 # ACCESS_TEAM_DOMAIN and ACCESS_AUD. The Worker verifies the Access JWT on
-# every request itself, so a misconfigured policy fails closed; outside local
-# development it refuses to start without ACCESS_AUD.
+# every request itself, so a misconfigured policy fails closed. Without
+# ACCESS_AUD it starts only for local development, when .dev.vars sets
+# DEV_IDENTITY, and then answers requests to localhost only.
 name = "photonrelic"
 main = "src/index.tsx"
 compatibility_date = "2026-09-01"
@@ -28,6 +29,7 @@ enabled = true
 crons = ["0 3 * * *"]
 
 [vars]
+# A label for the header only; it grants nothing.
 ENVIRONMENT = "local"
 # Your Zero Trust team domain, e.g. "yourteam.cloudflareaccess.com".
 ACCESS_TEAM_DOMAIN = ""

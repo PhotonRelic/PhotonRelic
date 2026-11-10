@@ -8,7 +8,7 @@ Within a version, **Operators must do** comes first whenever there is something 
 
 ### Changed
 
-- README brought in line with 1.1.0: the installer's `--mint` and `--commit` options and the account-owned bootstrap token, the resizer's canonical cache key and strict parameter spellings, the upload checks, the master upload guarantees, the local-development identity rule, the security headers, pnpm 10, and how releases are signed and verified. Documentation only.
+- Documentation brought in line with 1.1.0 throughout: the README (the installer's `--mint` and `--commit` options and the account-owned bootstrap token, the resizer's canonical cache key and strict parameter spellings, the upload checks, the master upload guarantees, the local-development identity rule, the security headers, pnpm 10, how releases are signed and verified), the deploy guide (what preflight and deploy now refuse, new troubleshooting rows), the agent guide, the security policy, `.env.example`, `.dev.vars.example` and the Worker configuration comments. Documentation only.
 
 ## [1.1.0] - 2026-11-09
 
