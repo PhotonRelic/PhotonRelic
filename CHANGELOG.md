@@ -6,10 +6,6 @@ Within a version, **Operators must do** comes first whenever there is something 
 
 ## [Unreleased]
 
-### Changed
-
-- Documentation brought in line with 1.1.0 throughout: the README (the installer's `--mint` and `--commit` options and the account-owned bootstrap token, the resizer's canonical cache key and strict parameter spellings, the upload checks, the master upload guarantees, the local-development identity rule, the security headers, pnpm 10, how releases are signed and verified), the deploy guide (what preflight and deploy now refuse, new troubleshooting rows), the agent guide, the security policy, `.env.example`, `.dev.vars.example` and the Worker configuration comments. The agent guide and the deploy guide now treat a private remote for the deployment repository as an offer, with what it buys and how to create it private and check that it is, rather than a reminder. Documentation only.
-
 ## [1.1.0] - 2026-11-09
 
 ### Operators must do
@@ -27,6 +23,10 @@ Within a version, **Operators must do** comes first whenever there is something 
 - `install.sh --mint` asks for the bootstrap token at a hidden prompt, so it never has to be in the environment or the shell history. On this path the account ID is read from the bootstrap token, so it is not asked for. Only an account-owned bootstrap token (Manage Account → Account API Tokens) is accepted: it can retire itself, and the tokens it mints belong to the account. A user-owned one is deleted on the spot when the token allows that, and the run stops asking for an account-owned one. `--commit <sha>` makes the installer, and `init-deploy-repo.sh`, refuse a checkout that is not that exact commit; each release's notes now end with the tagged commit and the installer's SHA-256.
 - Release tags must be signed by a key listed in `.github/allowed_signers`; the release workflow verifies the signature, and never replaces a published `install.sh`.
 - `pnpm-workspace.yaml` sets `minimumReleaseAge` to one day, so a dependency version must have been public for a day before pnpm installs it.
+
+### Changed
+
+- Documentation brought in line with 1.1.0 throughout: the README (the installer's `--mint` and `--commit` options and the account-owned bootstrap token, the resizer's canonical cache key and strict parameter spellings, the upload checks, the master upload guarantees, the local-development identity rule, the security headers, pnpm 10, how releases are signed and verified), the deploy guide (what preflight and deploy now refuse, new troubleshooting rows), the agent guide, the security policy, `.env.example`, `.dev.vars.example` and the Worker configuration comments. The agent guide and the deploy guide now treat a private remote for the deployment repository as an offer, with what it buys and how to create it private and check that it is, rather than a reminder. Documentation only.
 
 ### Fixed
 
