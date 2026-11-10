@@ -391,7 +391,8 @@ fi
 
 say ""
 say "installed. Sign in at https://$LIB_HOST/ with an address on $EMAIL_DOMAINS and upload a folder."
-say "Then commit the deployment repository and push it somewhere private:"
+say "Then commit the deployment repository:"
 say "  cd $DIR && git add -A && git commit -m \"$NAME: PhotonRelic deployed\""
+say "A remote for it is optional and must be private if you make one (docs/deploy.md, Create the deployment repository)."
 say "After the first upload: pnpm run verify $NAME --key <a filed key> confirms resizing."
 bootstrap_reminder

@@ -94,9 +94,19 @@ Good: it prints `done: … is staged, not committed` and the four next commands.
 
 **7. Deploy.** `pnpm run deploy <env>`. Good: migrations applied (or `No migrations to apply`), then `Deployed photonrelic-<env>-resizer` and `Deployed photonrelic-<env>` with their custom domains.
 
-**8. Verify.** `pnpm run verify <env>`. Good: `verify: N passed, 0 failed` and `ready: sign in at https://<library host>/`. If a hostname does not answer yet, wait one minute and run it again before treating it as a failure.
+**8. Verify.** `pnpm run verify <env>`. Good: `verify: N passed, 0 failed` and `ready: sign in at https://<library host>/`. A `note` saying a hostname resolves through 1.1.1.1 but not locally is this machine's resolver lagging, not a failure. If a hostname does not resolve anywhere yet, wait one minute and run it again before treating it as a failure.
 
-**9. Hand over.** Tell the person to sign in at the library's address with an email on an allowed domain, upload a folder, open a file page, and copy the markup. After that first upload, run `pnpm run verify <env> --key <a filed key>` to confirm resizing and Images. Remind them to create a private GitHub repository for `<dir>` and push it.
+**9. Hand over.** Tell the person to sign in at the library's address with an email on an allowed domain, upload a folder, open a file page, and copy the markup. After that first upload, run `pnpm run verify <env> --key <a filed key>` to confirm resizing and Images.
+
+**10. The deployment repository's home.** It holds only configuration and the pin; `.env` is ignored and never leaves the machine. Offer the person a private remote for it, and say plainly what it buys: working on the deployment from a second machine, a second pair of hands, and a history of when the pin moved. Nothing in it is irreplaceable: if the machine were lost, the installer would recreate the repository against the same resources in minutes, since provisioning finds what already exists. For one person on one machine, declining is a fine answer. If they want it and `gh` is signed in, do it for them, private from the first command, and check:
+
+```sh
+cd <dir> && git add -A && git commit -m "<env>: PhotonRelic deployed"
+gh repo create <owner>/<name> --private --source . --push
+gh repo view <owner>/<name> --json visibility --jq .visibility     # must print PRIVATE
+```
+
+If the last line prints anything but `PRIVATE`, stop and make it private before anything else (`gh repo edit <owner>/<name> --visibility private --accept-visibility-change-consequences`), then tell the person. Never create it public, and never push the deployment repository to a remote they did not name.
 
 ## Afterwards
 
@@ -118,5 +128,9 @@ Use the troubleshooting table in `docs/deploy.md`. The ones you will meet most:
 | `served as stored: x-media-transform: unavailable` | Images is not enabled. Ask the person to enable it; no redeploy. |
 | The library answers 500 | Provision did not run, or one half of the R2 token pair is set. Fix `.env`, deploy again. |
 | Upgrade: `no release tags` | The fork or mirror lacks the project's tags. Tell the person the two git commands in `docs/deploy.md`, Upgrading. |
+| Upgrade: `the deployment repository has uncommitted changes` | Commit the pending change in the deployment repository, or `git submodule update` to return the pin to the committed one, then upgrade. |
+| Preflight: `.env is readable by` others | `chmod 600 .env`, then preflight again. |
+| `library.toml is in local mode` or `has no ACCESS_AUD line` | The config was not made from `deploy/example`. Fix the file; never set `ENVIRONMENT = "local"` in a deployment. |
+| Mint: `this bootstrap token is user-owned` | Ask the person for an account-owned token (Manage Account → Account API Tokens); the script deleted the user one if it could, otherwise tell them to. |
 
 If the table does not cover it, show the person the exact output and stop.

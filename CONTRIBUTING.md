@@ -85,7 +85,7 @@ must act (a configuration or migration change that is not automatic), a
 minor one adds features, a patch fixes. A tag is never moved or deleted; a
 bad release is followed by a patch, and the bad one is marked as a
 pre-release so `latest` skips it. A tag ruleset on `v*` limits who can
-create one.
+create, move or delete one.
 
 ## License
 

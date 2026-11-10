@@ -6,6 +6,10 @@ Within a version, **Operators must do** comes first whenever there is something 
 
 ## [Unreleased]
 
+### Changed
+
+- Documentation brought in line with 1.1.0 throughout: the README (the installer's `--mint` and `--commit` options and the account-owned bootstrap token, the resizer's canonical cache key and strict parameter spellings, the upload checks, the master upload guarantees, the local-development identity rule, the security headers, pnpm 10, how releases are signed and verified), the deploy guide (what preflight and deploy now refuse, new troubleshooting rows), the agent guide, the security policy, `.env.example`, `.dev.vars.example` and the Worker configuration comments. The agent guide and the deploy guide now treat a private remote for the deployment repository as an offer, with what it buys and how to create it private and check that it is, rather than a reminder. Documentation only.
+
 ## [1.1.0] - 2026-11-09
 
 ### Operators must do

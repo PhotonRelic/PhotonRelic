@@ -24,7 +24,7 @@ Do these once in the Cloudflare dashboard. Each is a product switch, not a confi
 
 | Need | Where | Why |
 | --- | --- | --- |
-| A Cloudflare account | dash.cloudflare.com | Everything lives in it. The **account ID** is on the right of the account's home page; you will need it. |
+| A Cloudflare account | dash.cloudflare.com | Everything lives in it. The **account ID** is on the right of the account's home page; you will need it, unless the installer mints your tokens, in which case it reads the ID from the bootstrap token. |
 | Your domain as a zone | Websites → Add a domain | Both hostnames must be under a domain whose DNS Cloudflare serves. The Free zone plan is enough. |
 | **Workers Paid** plan | Workers & Pages → Plans | Required. A cold resize of a large original takes a few hundred milliseconds of CPU; the Free plan's 10 ms limit kills a page of fresh thumbnails. Base price is $5 a month. |
 | **R2** enabled | R2 → Overview → Get started | Object storage. Needs a payment method on the account; usage at library scale sits inside the free allowance. |
@@ -47,7 +47,7 @@ To pin the install to the exact code the notes describe, so that a tag moved und
 
 It asks for an environment name, the two hostnames, your account ID, the email domains staff sign in with, and the deploy token (typed without echo, or taken from `CLOUDFLARE_API_TOKEN` in your environment; the [Tokens](#tokens) section says what the token needs). Then it creates the deployment repository in `./photonrelic-deploy`, pinned to the newest release, installs its dependencies, runs preflight, shows what it is about to create and asks once, then provisions, deploys and verifies. When something fails it stops, shows the failure with its fix, and prints the one command that continues from there; running the installer again with the same answers also continues.
 
-Every question has an option, so the whole thing can run without prompts: `--dir`, `--name`, `--library-host`, `--resizer-host`, `--account-id`, `--email-domains`, `--team-name`, `--yes`. `--dry-run` stops after preflight and creates nothing in the account; `--version v1.2.0` installs that release instead of the newest; `--commit <sha>` requires it to be that exact commit; `--source <url>` installs from your fork or mirror over `https://`, `ssh://` or `git@host:`, never a plaintext scheme. `sh install.sh --help` lists them.
+Every question has an option, so the whole thing can run without prompts: `--dir`, `--name`, `--library-host`, `--resizer-host`, `--account-id`, `--email-domains`, `--team-name`, `--yes`. `--dry-run` stops after preflight and creates nothing in the account; `--version v1.2.0` installs that release instead of the newest; `--commit <sha>` requires it to be that exact commit; `--source <url>` installs from your fork or mirror over `https://`, `ssh://` or `git@host:`, never a plaintext scheme. `--mint`, `--usage`, `--purge`, `--masters` and `--retire-bootstrap` belong to the token-minting path described under [Tokens](#or-let-the-installer-mint-them). `sh install.sh --help` lists them all.
 
 When it finishes, sign in at the library's address, upload a folder, and commit the deployment repository (it tells you how). The sections from [Create the deployment repository](#create-the-deployment-repository) to [Verify](#verify) are what it just did, one step at a time.
 
@@ -96,7 +96,12 @@ pnpm run setup
 
 The commands in this repository are always `pnpm run <name>`. pnpm has built-in commands called `setup` and `deploy`, and without `run` it runs those instead of the scripts.
 
-Create a private repository on GitHub for it and push, when you are ready. Nothing secret is in it; it is private because it is yours.
+Give it a private remote when you are ready, or not at all. Nothing secret is in it (`.env` is ignored), and nothing in it is irreplaceable: the installer recreates it against the same resources in minutes, since provisioning finds what already exists. A remote buys you a second machine, a second person, and a history of when the pin moved. If you want one, make it private from the first command and check that it is:
+
+```sh
+gh repo create <owner>/<name> --private --source . --push
+gh repo view <owner>/<name> --json visibility --jq .visibility     # PRIVATE
+```
 
 ## Tokens
 
@@ -130,7 +135,7 @@ Also in `.env`: `CLOUDFLARE_ACCOUNT_ID`, and `ACCESS_ALLOWED_EMAIL_DOMAINS`, the
 | --- | --- | --- |
 | `ANALYTICS_TOKEN` | Account → Account Analytics → Read | Usage counts per file and the "unused in 90 days" list. |
 | `CACHE_PURGE_TOKEN` | Zone → Cache Purge → Purge, on the resizer's zone. Also uncomment `CF_ZONE_ID` in `library.toml`. | Replace, Delete and detected changes clear the edge cache at once instead of within a day. |
-| `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` | An **R2 API token** (R2 → Manage API tokens, a different kind of token): Object Read & Write, on the one media bucket, no expiry. | Masters stored in the bucket, uploaded from the browser. Without it, masters can still be linked by URL. |
+| `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` | An **R2 API token** (R2 → Manage API tokens, a different kind of token): Object Read & Write, on the one media bucket, no expiry. `mint-tokens.sh --masters` makes it for you once the bucket exists. | Masters stored in the bucket, uploaded from the browser. Without it, masters can still be linked by URL. |
 
 ### Or let the installer mint them
 
@@ -166,7 +171,7 @@ A variable already set in `.env` is left alone, except that an existing deploy t
 pnpm run preflight production
 ```
 
-Creates nothing. Checks the machine, verifies the token, probes every permission the deploy needs and names any that is missing, confirms R2 is enabled, that a Zero Trust organization exists or can be created, that each hostname is under a zone in your account, and that the optional tokens, if present, are valid. Two things it cannot read with the deploy token: the account's plan and whether Images is enabled. It says so and names the dashboard page; verification after the deploy settles Images for certain. Fix every `FAIL` before going on.
+Creates nothing. Checks the machine (Node, pnpm 10, curl 7.55, dependencies installed), that `.env` is readable by you alone, that `library.toml` has an `ACCESS_AUD` line and is not in local mode, verifies the token, probes every permission the deploy needs and names any that is missing, confirms R2 is enabled, that a Zero Trust organization exists or can be created, that each hostname is under a zone in your account, and that the optional tokens, if present, are valid. Two things it cannot read with the deploy token: the account's plan and whether Images is enabled. It says so and names the dashboard page; verification after the deploy settles Images for certain. Fix every `FAIL` before going on.
 
 ## Provision
 
@@ -189,7 +194,7 @@ pnpm run check                # builds both Workers without credentials; catches
 pnpm run deploy production    # migrations, then the resizer, then the library
 ```
 
-The library refuses to start until `ACCESS_AUD` is set, so a deploy before provisioning fails closed rather than open. Optional tokens found in `.env` are stored as the library Worker's secrets on every deploy.
+The library refuses to start until `ACCESS_AUD` is set, so a deploy before provisioning fails closed rather than open, and `deploy.sh` itself refuses a `library.toml` that has no `ACCESS_AUD` line or that sets `ENVIRONMENT = "local"`. Optional tokens found in `.env` are stored as the library Worker's secrets on every deploy; wrangler is the only program the scripts hand the deploy token to.
 
 ## Verify
 
@@ -197,7 +202,7 @@ The library refuses to start until `ACCESS_AUD` is set, so a deploy before provi
 pnpm run verify production
 ```
 
-From the outside: the resizer answers, refuses `masters/`, and its metadata API gives a clean 404 for an unknown key; the library redirects to the Access login and never answers without one. With credentials: no migration is left to apply, and the bucket's CORS rule names the library. After your first upload, run it again with `--key media/<a filed key>` and it confirms that resizing works and Images is on.
+From the outside: the resizer answers, refuses `masters/`, and its metadata API gives a clean 404 for an unknown key; the library redirects to the Access login and never answers without one. With credentials: no migration is left to apply, and the bucket's CORS rule names the library. After your first upload, run it again with `--key media/<a filed key>` and it confirms that resizing works and Images is on. If your own machine's resolver has not yet heard of a new hostname, verify resolves it through Cloudflare's resolver and says so in a note; the deployment is judged, not your laptop.
 
 ## First upload and staff
 
@@ -243,6 +248,11 @@ For a fork or mirror, the upgrade needs the project's tags in it: `git fetch htt
 | The installer stopped partway | One step failed; it printed the failure and the command that continues | Fix what it reported, then run that command, or run the installer again with the same answers. Provisioning is idempotent. |
 | Upgrade: `no release tags` | A fork or mirror without the project's tags | `git fetch https://github.com/PhotonRelic/PhotonRelic.git --tags && git push <your remote> --tags`. |
 | Upgrade: `is older than the current pin` | The target is a release behind the one deployed | Pick a newer release, or pass `--allow-downgrade` knowing migrations stay applied. |
+| Upgrade: `the deployment repository has uncommitted changes` | The submodule pin or a config file is changed but not committed | Commit it (or `git submodule update` to return the pin to the committed one), then upgrade. |
+| Preflight: `.env is readable by` others | The file was created with default permissions | `chmod 600 .env`. |
+| Preflight or deploy: `library.toml is in local mode` or `has no ACCESS_AUD line` | A development config was copied into an environment | Start from `deploy/example/library.toml`; `ENVIRONMENT` is a label, never `local` in a deployment. |
+| Mint: `this bootstrap token is user-owned` | The token was made under My Profile | Make an account-owned one under Manage Account → Account API Tokens; the script deletes the user one when it can. |
+| Mint: `does not name exactly one account` | The bootstrap token spans several accounts, or none | Scope it to the one account, or pass `--account-id`. |
 
 ## What it costs
 
