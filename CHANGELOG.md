@@ -6,6 +6,10 @@ Within a version, **Operators must do** comes first whenever there is something 
 
 ## [Unreleased]
 
+### Changed
+
+- README brought in line with 1.1.0: the installer's `--mint` and `--commit` options and the account-owned bootstrap token, the resizer's canonical cache key and strict parameter spellings, the upload checks, the master upload guarantees, the local-development identity rule, the security headers, pnpm 10, and how releases are signed and verified. Documentation only.
+
 ## [1.1.0] - 2026-11-09
 
 ### Operators must do
